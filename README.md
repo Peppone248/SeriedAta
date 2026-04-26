@@ -1,23 +1,22 @@
-# Serie A analysis refactor
+# Serie dAta
 
-This refactor turns a single long notebook-style script into a small Python package.
+This project has the aim to cover all the ETL and Data engineering tasks, handling a dataset based on Serie A teams and
+matches statistics between 2020-2025.
 
 ## Structure
 
 ```text
-seriea_refactor/
+seriedAta/
 ├── README.md
 ├── main.py
-└── src/
-    └── seriea_project/
-        ├── __init__.py
-        ├── aggregations.py
-        ├── cleaning.py
-        ├── config.py
-        ├── features.py
-        ├── pipeline.py
-        ├── statistics.py
-        └── validation.py
+├── __init__.py
+├── aggregations.py
+├── cleaning.py
+├── config.py
+├── features.py
+├── pipeline.py
+├── statistics.py
+└── validation.py
 ```
 
 ## What each file does
@@ -30,10 +29,9 @@ seriea_refactor/
 - `validation.py`: data quality and consistency checks.
 - `pipeline.py`: runs the full workflow and returns all output tables.
 - `main.py`: entry point you can run as a script.
+- `visualization.py`: include all methods used to plot useful statistics coming from data.
 
 ## Run
-
-From the `seriea_refactor` folder:
 
 ```bash
 python main.py --csv-path matches_seriea.csv

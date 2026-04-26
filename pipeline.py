@@ -15,12 +15,16 @@ from aggregations import (
 )
 from cleaning import clean_matches, load_matches
 from features import add_match_features, add_match_identifiers
-from statistics import basic_statistics
+from stats import basic_statistics
 from validation import validate_raw_values, validate_team_season_stats
+from output_utils import save_outputs
 
 
-
-def run_pipeline(csv_path: str) -> dict[str, pd.DataFrame | dict[str, object] | object]:
+def run_pipeline(
+    csv_path: str,
+    save: bool = False,
+    output_dir: str = "data/processed",
+) -> dict[str, pd.DataFrame | dict[str, object] | object]:
     """Run the full Serie A prep and analysis workflow."""
     raw_df = load_matches(csv_path)
     clean_matches(raw_df)
@@ -42,7 +46,7 @@ def run_pipeline(csv_path: str) -> dict[str, pd.DataFrame | dict[str, object] | 
 
     aggregation_checks = validate_team_season_stats(team_season_stats)
 
-    return {
+    outputs = {
         "raw_df": raw_df,
         "validation_summary": validation_summary,
         "stats_summary": stats_summary,
@@ -59,3 +63,8 @@ def run_pipeline(csv_path: str) -> dict[str, pd.DataFrame | dict[str, object] | 
         "day_stats_matches": day_stats_matches,
         "aggregation_checks": aggregation_checks,
     }
+
+    if save:
+        save_outputs(outputs, output_dir=output_dir, save_raw=False)
+
+    return outputs
