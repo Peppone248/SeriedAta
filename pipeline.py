@@ -18,6 +18,8 @@ from features import add_match_features, add_match_identifiers
 from stats import basic_statistics
 from validation import validate_raw_values, validate_team_season_stats
 from output_utils import save_outputs
+import logging
+logger = logging.getLogger(__name__)
 
 
 def run_pipeline(
@@ -27,13 +29,18 @@ def run_pipeline(
 ) -> dict[str, pd.DataFrame | dict[str, object] | object]:
     """Run the full Serie A prep and analysis workflow."""
     raw_df = load_matches(csv_path)
+    logger.info("Loading raw data from %s", csv_path)
     clean_matches(raw_df)
+    logger.info("Cleaning data")
 
     validation_summary = validate_raw_values(raw_df)
 
     add_match_features(raw_df)
     add_match_identifiers(raw_df)
 
+    raw_df.to_csv("data/interim/matches_featured.csv", index=False)
+
+    logger.info("Adding match features")
     stats_summary = basic_statistics(raw_df)
 
     team_stats = build_team_stats(raw_df)
@@ -45,6 +52,8 @@ def run_pipeline(
     match_df, day_stats_matches = build_match_level_day_stats(raw_df)
 
     aggregation_checks = validate_team_season_stats(team_season_stats)
+
+    logger.info("Building aggregate tables")
 
     outputs = {
         "raw_df": raw_df,
@@ -66,5 +75,7 @@ def run_pipeline(
 
     if save:
         save_outputs(outputs, output_dir=output_dir, save_raw=False)
+
+    logger.info("Saving processed outputs to %s", output_dir)
 
     return outputs
