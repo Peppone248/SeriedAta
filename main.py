@@ -1,8 +1,17 @@
 import pandas as pd
-
+import numpy as np
 from pipeline import run_pipeline
 from reporting import generate_summary_md
-from visualizations import build_all_figures
+from visualizations import (
+    build_all_figures,
+    plot_residuals,
+    plot_predicted_vs_actual,
+    plot_residual_vs_predicted,
+    plot_correlation_matrix,
+    plot_residual_distribution,
+    print_target_correlation,
+    show_target_distribution
+)
 
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 1200)
@@ -22,6 +31,8 @@ def main() -> None:
         output_dir="data/processed",
     )
 
+    raw_df = outputs["raw_df"]
+
     build_all_figures(outputs, output_dir="reports/figures")
     report_path = generate_summary_md(outputs, output_path="reports/summary.md")
 
@@ -39,23 +50,82 @@ def main() -> None:
     print("Figures saved to: reports/figures")
     print(f"Summary report saved to: {report_path}")
 
-    from modeling import run_linear_regression_baseline
+    from modeling import split_errors, run_regression_pipeline
 
-    feature_cols = ["xg", "xga", "poss", "sh", "sot", "is_home", "matchweek"]
+    feature_cols = ["xg",
+                    "xga",
+                    "poss",
+                    "sh",
+                    "sot",
+                    "shot_accuracy",
+                    "is_home",
+                    "strength_points_diff",
+                    "strength_xg_diff",
+                    "strength_xga_diff",
+                    "roll_xg",
+                    "roll_xga",
+                    "roll_points",
+                    ]
     target_col = "goal_diff"
 
-    model_outputs = run_linear_regression_baseline(
-        df=outputs["raw_df"],
+    # -------------------------
+    # FEATURE ENGINEERING (ROLLING)
+    # -------------------------
+    print("\n========== ROLLING FEATURES ==========")
+
+    raw_df = add_rolling_team_form(raw_df, window=5)
+
+    # -------------------------
+    # DATA EXPLORATION
+    # -------------------------
+    print("\n========== TARGET ANALYSIS ==========")
+
+    show_target_distribution(raw_df)
+    print_target_correlation(raw_df)
+
+    plot_correlation_matrix(raw_df)
+
+    # 2. Run ML pipeline
+    ml_outputs = run_regression_pipeline(
+        df=raw_df,
         feature_cols=feature_cols,
         target_col=target_col,
-        save=True,
-        output_dir="reports/metrics",
-        prefix="goal_diff_baseline",
     )
 
-    print(model_outputs["metrics"])
-    print(model_outputs["coefficients"])
-    print(model_outputs["predictions"].head())
+    print("\n=== TEST METRICS ===")
+    print(ml_outputs["test_metrics"])
+
+    print("\n=== CROSS VALIDATION ===")
+    print(ml_outputs["cv_metrics"])
+
+    print("\n=== SAMPLE PREDICTIONS ===")
+    print(ml_outputs["predictions"].head())
+
+    preds = ml_outputs["predictions"]
+
+    # -------------------------
+    # RESIDUAL ANALYSIS
+    # -------------------------
+    print("\n========== RESIDUAL ANALYSIS ==========")
+
+    print(preds["residual"].describe())
+
+    easy, medium, hard = split_errors(preds)
+
+    print("\nHardest predictions sample:")
+    print(hard.head())
+
+    # -------------------------
+    # VISUALIZATIONS
+    # -------------------------
+    print("\n========== GENERATING PLOTS ==========")
+
+    plot_predicted_vs_actual(preds)
+    plot_residuals(preds)
+    plot_residual_vs_predicted(preds)
+    plot_residual_distribution(preds)
+
+    print("\nPipeline completed successfully.")
 
 
 if __name__ == "__main__":

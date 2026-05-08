@@ -2,15 +2,33 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Sequence
-
+import numpy as np
 import pandas as pd
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import (
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-)
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+def build_pipeline():
+    """
+    Sklearn ML pipeline.
+    Even if we only use LinearRegression now,
+    this structure is future-proof.
+    """
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        ("model", LinearRegression())
+    ])
+
+
+def split_data(X, y, test_size=0.2, random_state=42):
+    return train_test_split(X, y, test_size=test_size, random_state=random_state)
+
+
+def train_model(pipeline, X_train, y_train):
+    pipeline.fit(X_train, y_train)
+    return pipeline
 
 
 def build_regression_dataset(
@@ -29,6 +47,51 @@ def build_regression_dataset(
     y = model_df[target_col]
 
     return X, y
+
+
+def evaluate_model(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+
+    return {
+        "mae": float(mean_absolute_error(y_test, y_pred)),
+        "rmse": float(mean_squared_error(y_test, y_pred)),
+        "r2": float(r2_score(y_test, y_pred)),
+    }
+
+
+def cross_validate_model(pipeline, X, y, cv=5):
+    """
+    Evaluate model stability across folds.
+    """
+    mae_scores = cross_val_score(
+        pipeline,
+        X,
+        y,
+        scoring="neg_mean_absolute_error",
+        cv=cv
+    )
+
+    rmse_scores = cross_val_score(
+        pipeline,
+        X,
+        y,
+        scoring="neg_root_mean_squared_error",
+        cv=cv
+    )
+
+    r2_scores = cross_val_score(
+        pipeline,
+        X,
+        y,
+        scoring="r2",
+        cv=cv
+    )
+
+    return {
+        "cv_mae_mean": float(-mae_scores.mean()),
+        "cv_rmse_mean": float(-rmse_scores.mean()),
+        "cv_r2_mean": float(r2_scores.mean()),
+    }
 
 
 def split_regression_data(
@@ -77,6 +140,19 @@ def evaluate_regression(
     }
     return metrics
 
+def evaluate_baseline_mean(y_train, y_test):
+    """
+    Baseline model: always predicts the mean of y_train.
+    """
+    baseline_pred = np.full_like(y_test, fill_value=y_train.mean(), dtype=float)
+
+    metrics = {
+        "mae": mean_absolute_error(y_test, baseline_pred),
+        "rmse": mean_squared_error(y_test, baseline_pred),
+        "r2": r2_score(y_test, baseline_pred),
+    }
+
+    return metrics, baseline_pred
 
 def build_coefficients_table(
     model: LinearRegression,
@@ -135,7 +211,7 @@ def run_linear_regression_baseline(
     df: pd.DataFrame,
     feature_cols: Sequence[str],
     target_col: str,
-    test_size: float = 0.3,
+    test_size: float = 0.2,
     random_state: int = 42,
     save: bool = False,
     output_dir: str = "reports/metrics",
@@ -181,3 +257,64 @@ def run_linear_regression_baseline(
         )
 
     return outputs
+
+def run_regression_pipeline(
+    df,
+    feature_cols,
+    target_col,
+    test_size=0.2,
+    random_state=42,
+):
+    """
+    Full ML workflow using sklearn Pipeline.
+    """
+
+    # 1. dataset
+    model_df = df[feature_cols + [target_col]].dropna()
+    X = model_df[feature_cols]
+    y = model_df[target_col]
+
+    # 2. split
+    X_train, X_test, y_train, y_test = split_data(X, y, test_size, random_state)
+
+    # 3. pipeline
+    pipeline = build_pipeline()
+
+    # 4. train
+    model = train_model(pipeline, X_train, y_train)
+
+    # 5. evaluation
+    test_metrics = evaluate_model(model, X_test, y_test)
+
+    # 6. cross-validation (on full dataset)
+    cv_metrics = cross_validate_model(pipeline, X, y)
+
+    # 7. predictions + residuals
+    y_pred = model.predict(X_test)
+
+    predictions = X_test.copy()
+    predictions["actual"] = y_test.values
+    predictions["predicted"] = y_pred
+    predictions["residual"] = predictions["actual"] - predictions["predicted"]
+
+    return {
+        "model": model,
+        "test_metrics": test_metrics,
+        "cv_metrics": cv_metrics,
+        "predictions": predictions,
+    }
+
+def split_errors(preds: pd.DataFrame):
+    preds = preds.copy()
+
+    preds["abs_error"] = abs(preds["residual"])
+
+    easy = preds[preds["abs_error"] <= 0.5]
+    medium = preds[(preds["abs_error"] > 0.5) & (preds["abs_error"] <= 1.5)]
+    hard = preds[preds["abs_error"] > 1.5]
+
+    print("Easy predictions:", len(easy))
+    print("Medium predictions:", len(medium))
+    print("Hard predictions:", len(hard))
+
+    return easy, medium, hard

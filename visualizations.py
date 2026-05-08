@@ -141,3 +141,134 @@ def build_all_figures(outputs: dict, output_dir: str = "reports/figures") -> Non
     plot_team_avg_points(outputs["team_stats"], output_dir)
     plot_xg_vs_points(outputs["team_stats"], output_dir)
     plot_day_stats(outputs["day_stats_matches"], output_dir)
+
+
+def ensure_dir(path: str) -> Path:
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def plot_residuals(preds, output_dir="reports/figures"):
+    """
+    Distribution of residuals
+    """
+    out_path = ensure_dir(output_dir)
+
+    plt.figure(figsize=(10, 6))
+    sns.histplot(preds["residual"], kde=True, bins=30)
+    plt.axvline(0, color="red", linestyle="--")
+    plt.title("Residual Distribution")
+    plt.xlabel("Residual (actual - predicted)")
+    plt.ylabel("Frequency")
+
+    plt.tight_layout()
+    plt.savefig(out_path / "residual_distribution.png", dpi=150)
+    plt.close()
+
+
+def plot_predicted_vs_actual(preds, output_dir="reports/figures"):
+    """
+    Visual check: how close predictions are to reality
+    """
+    out_path = ensure_dir(output_dir)
+
+    plt.figure(figsize=(7, 7))
+    sns.scatterplot(data=preds, x="actual", y="predicted")
+
+    min_val = min(preds["actual"].min(), preds["predicted"].min())
+    max_val = max(preds["actual"].max(), preds["predicted"].max())
+
+    plt.plot([min_val, max_val], [min_val, max_val], "r--")
+
+    plt.title("Predicted vs Actual")
+    plt.xlabel("Actual goal_diff")
+    plt.ylabel("Predicted goal_diff")
+
+    plt.tight_layout()
+    plt.savefig(out_path / "predicted_vs_actual.png", dpi=150)
+    plt.close()
+
+
+def plot_residual_vs_predicted(preds, output_dir="reports/figures"):
+    """
+    Check structure in errors (should be random)
+    """
+    out_path = ensure_dir(output_dir)
+
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(data=preds, x="predicted", y="residual")
+    plt.axhline(0, color="red", linestyle="--")
+
+    plt.title("Residuals vs Predicted")
+    plt.xlabel("Predicted value")
+    plt.ylabel("Residual")
+
+    plt.tight_layout()
+    plt.savefig(out_path / "residual_vs_predicted.png", dpi=150)
+    plt.close()
+
+
+def plot_correlation_matrix(df: pd.DataFrame, output_path="reports/figures/corr_matrix.png"):
+    numeric_df = df.select_dtypes(include="number")
+
+    corr = numeric_df.corr()
+
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(corr, cmap="coolwarm", center=0)
+    plt.title("Correlation Matrix")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+
+
+def print_target_correlation(df: pd.DataFrame):
+    corr = df.corr(numeric_only=True)["goal_diff"].sort_values(ascending=False)
+    print(corr)
+
+# ----- ML Models outcome visualizations -----
+
+def plot_actual_vs_predicted(preds, path="reports/figures/actual_vs_pred.png"):
+    plt.figure(figsize=(6, 6))
+    sns.scatterplot(data=preds, x="actual", y="predicted")
+
+    min_v = min(preds["actual"].min(), preds["predicted"].min())
+    max_v = max(preds["actual"].max(), preds["predicted"].max())
+
+    plt.plot([min_v, max_v], [min_v, max_v], "r--")
+
+    plt.title("Actual vs Predicted")
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close()
+
+
+def plot_residual_distribution(preds, path="reports/figures/residual_dist.png"):
+    plt.figure(figsize=(8, 5))
+    sns.histplot(preds["residual"], bins=30, kde=True)
+    plt.axvline(0, color="red")
+
+    plt.title("Residual Distribution")
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close()
+
+
+def plot_residual_vs_predicted(preds, path="reports/figures/residual_vs_pred.png"):
+    plt.figure(figsize=(8, 5))
+    sns.scatterplot(data=preds, x="predicted", y="residual")
+    plt.axhline(0, color="red")
+
+    plt.title("Residual vs Predicted")
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close()
+
+
+def show_target_distribution(df):
+    print(df["goal_diff"].describe())
+
+    sns.histplot(df["goal_diff"], bins=20)
+    plt.title("Goal Difference Distribution")
+    plt.show()
