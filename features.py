@@ -30,10 +30,15 @@ def add_match_features(df: pd.DataFrame) -> pd.DataFrame:
     df["xg_ratio"] = df["xg"] / (df["xga"] + 1e-6)
     df["conversion_rate"] = df["gf"] / (df["sh"] + 1e-6)
     df["shots_allowed_efficiency"] = df["ga"] / (df["sot"] + 1e-6)
-    df["xg_overperformance"] = df["gf"] - df["xg"]
-    df["xg_underperformance_def"] = df["xga"] - df["ga"]
     df["points_per_xg"] = np.where(df["xg"] > 0, df["points"] / df["xg"], np.nan)
     df["low_scoring_match"] = ((df["gf"] + df["ga"]) <= 2).astype("int8")
+    # ------ if finishing_eff is less than 1, means attacking was wasteful ------
+    df["finishing_efficiency"] = np.where(df["xg"] > 0, df["gf"] / df["xg"], np.nan)
+    df["defensive_efficiency"] = np.where(
+        df["xga"] > 0,
+        df["ga"] / df["xga"],
+        np.nan
+    )
 
     if "round" in df.columns:
         df["matchweek"] = (
@@ -117,6 +122,7 @@ def add_strength_differences(df: pd.DataFrame) -> pd.DataFrame:
     df["strength_goal_diff"] = df["home_avg_goals_for"] - df["away_avg_goals_for"]
 
     return df
+
 
 def add_rolling_team_form(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
     df = df.copy()

@@ -209,15 +209,24 @@ def plot_residual_vs_predicted(preds, output_dir="reports/figures"):
     plt.close()
 
 
-def plot_correlation_matrix(df: pd.DataFrame, output_path="reports/figures/corr_matrix.png"):
-    numeric_df = df.select_dtypes(include="number")
+def plot_correlation_matrix(df, output_path="reports/figures/corr_structure.png"):
+    """
+    Structure-only heatmap (no numbers).
+    """
 
-    corr = numeric_df.corr()
+    corr = df.corr(numeric_only=True)
 
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(corr, cmap="coolwarm", center=0)
-    plt.title("Correlation Matrix")
+    plt.figure(figsize=(12, 10))
 
+    sns.heatmap(
+        corr,
+        cmap="coolwarm",
+        center=0,
+        annot=False,   # IMPORTANT
+        linewidths=0.2
+    )
+
+    plt.title("Correlation Matrix (Structure View)")
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
     plt.close()

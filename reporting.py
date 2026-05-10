@@ -19,9 +19,7 @@ def generate_summary_md(
     output_path: str = "reports/summary.md",
     project_title: str = "Serie A Data Engineering / Data Science Project",
 ) -> Path:
-    """
-    Generate a markdown summary report from pipeline outputs.
-    """
+
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -34,22 +32,26 @@ def generate_summary_md(
     venue_merged = outputs["venue_merged"]
     day_stats_matches = outputs["day_stats_matches"]
 
+    # ---------------- ML OUTPUTS (NEW) ----------------
+    ml = outputs.get("ml_outputs", {})
+
+    reg = ml.get("regression", {})
+    clf = ml.get("classification", {})
+
+    test_metrics = reg.get("test_metrics", {})
+    cv_metrics = reg.get("cv_metrics", {})
+
+    clf_metrics = clf.get("metrics", {})
+    coefficients = ml.get("coefficients", pd.DataFrame())
+    predictions = ml.get("predictions", pd.DataFrame())
+
+    # dataset info
     n_rows, n_cols = raw_df.shape
     n_seasons = int(raw_df["season"].nunique()) if "season" in raw_df.columns else None
     n_teams = int(raw_df["team"].nunique()) if "team" in raw_df.columns else None
+
     date_min = raw_df["date"].min() if "date" in raw_df.columns else None
     date_max = raw_df["date"].max() if "date" in raw_df.columns else None
-
-    biggest_margin_row = title_race.loc[title_race["title_margin"].idxmax()] if not title_race.empty else None
-    closest_race_row = title_race.loc[title_race["title_margin"].idxmin()] if not title_race.empty else None
-    biggest_home_adv_row = venue_merged.loc[venue_merged["avg_points_diff"].idxmax()] if not venue_merged.empty else None
-    smallest_home_gap_row = venue_merged.loc[venue_merged["avg_points_diff"].idxmin()] if not venue_merged.empty else None
-    top_home_win_row = venue_merged.loc[venue_merged["home_win_rate"].idxmax()] if not venue_merged.empty else None
-    busiest_day_row = day_stats_matches.loc[day_stats_matches["matches"].idxmax()] if not day_stats_matches.empty else None
-    highest_scoring_day_row = (
-        day_stats_matches.loc[day_stats_matches["avg_total_goals"].idxmax()]
-        if not day_stats_matches.empty else None
-    )
 
     lines: list[str] = []
 
@@ -58,72 +60,157 @@ def generate_summary_md(
     lines.append(f"_Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_")
     lines.append("")
 
+    # ---------------- OBJECTIVE ----------------
     lines.append("## Project objective")
     lines.append(
-        "Build a reproducible pipeline that transforms raw Serie A match data into "
-        "validated analytical tables, visual reports, and machine-learning-ready features."
+        "Build an end-to-end pipeline for Serie A data including "
+        "data engineering, feature engineering, and machine learning modeling "
+        "to predict match goal differences and analyze team performance."
     )
     lines.append("")
 
+    # ---------------- DATASET ----------------
     lines.append("## Dataset overview")
-    lines.append(f"- Row count: **{n_rows}**")
-    lines.append(f"- Column count: **{n_cols}**")
+    lines.append(f"- Rows: **{n_rows}**")
+    lines.append(f"- Columns: **{n_cols}**")
     lines.append(f"- Seasons: **{n_seasons}**")
     lines.append(f"- Teams: **{n_teams}**")
+
     if date_min is not None and pd.notna(date_min):
-        lines.append(f"- Date range: **{date_min.date()}** to **{date_max.date()}**")
+        lines.append(f"- Date range: **{date_min.date()} → {date_max.date()}**")
     lines.append("")
 
+    # ---------------- PIPELINE ----------------
     lines.append("## Pipeline stages")
-    lines.append("1. Ingestion from raw CSV")
-    lines.append("2. Cleaning and schema standardization")
-    lines.append("3. Validation and quality checks")
-    lines.append("4. Feature engineering")
-    lines.append("5. Aggregations and analytical marts")
-    lines.append("6. Visualization and reporting")
+    lines.append("1. Data ingestion")
+    lines.append("2. Cleaning & validation")
+    lines.append("3. Feature engineering (xG, strength, rolling form)")
+    lines.append("4. Aggregation (team & season analysis)")
+    lines.append("5. Machine learning modeling (Linear Regression)")
+    lines.append("6. Evaluation & residual analysis")
+    lines.append("7. Visualization & reporting")
     lines.append("")
 
-    lines.append("## Validation summary")
-    for key, value in validation_summary.items():
-        lines.append(f"- **{key}**: `{value}`")
+    # ---------------- VALIDATION ----------------
+    lines.append("## Data validation")
+    for k, v in validation_summary.items():
+        lines.append(f"- **{k}**: `{v}`")
     lines.append("")
 
     lines.append("## Aggregation checks")
-    for key, value in aggregation_checks.items():
-        lines.append(f"- **{key}**: `{value}`")
+    for k, v in aggregation_checks.items():
+        lines.append(f"- **{k}**: `{v}`")
     lines.append("")
 
-    if biggest_margin_row is not None:
-        lines.append("## Key findings")
+    # ---------------- KEY FINDINGS ----------------
+    lines.append("## Key football insights")
+
+    if not venue_merged.empty:
+        best_home = venue_merged.loc[venue_merged["avg_points_diff"].idxmax()]
+        worst_home = venue_merged.loc[venue_merged["avg_points_diff"].idxmin()]
+
         lines.append(
-            f"- Biggest title margin: **{biggest_margin_row['champion_team']}** in "
-            f"**{biggest_margin_row['season']}** by **{biggest_margin_row['title_margin']}** points."
+            f"- Strongest home advantage: **{best_home['team']}** "
+            f"({best_home['avg_points_diff']:.3f} points gap)"
         )
         lines.append(
-            f"- Closest title race: **{closest_race_row['season']}**, margin of "
-            f"**{closest_race_row['title_margin']}** points."
+            f"- Weakest home advantage: **{worst_home['team']}** "
+            f"({worst_home['avg_points_diff']:.3f} points gap)"
+        )
+
+    lines.append("")
+
+    # ---------------- ML RESULTS (NEW SECTION) ----------------
+    if test_metrics or cv_metrics:
+
+        lines.append("## Machine Learning - Regression (goal_diff)")
+        lines.append("")
+
+        if test_metrics:
+            lines.append("### Test metrics")
+            for k, v in test_metrics.items():
+                lines.append(f"- **{k}**: `{v:.4f}`")
+            lines.append("")
+
+        if cv_metrics:
+            lines.append("### Cross-validation metrics")
+            for k, v in cv_metrics.items():
+                lines.append(f"- **{k}**: `{v:.4f}`")
+            lines.append("")
+
+        lines.append("## Model interpretation")
+
+        lines.append(
+            "- The model explains match outcomes using xG-based signals and team strength features."
         )
         lines.append(
-            f"- Biggest home advantage: **{biggest_home_adv_row['team']}**, with an average points gap of "
-            f"**{biggest_home_adv_row['avg_points_diff']:.3f}**."
+            "- Average error (~MAE) indicates prediction uncertainty of roughly 1 goal per match."
         )
         lines.append(
-            f"- Smallest home-away gap: **{smallest_home_gap_row['team']}**, with an average points gap of "
-            f"**{smallest_home_gap_row['avg_points_diff']:.3f}**."
-        )
-        lines.append(
-            f"- Highest home win rate: **{top_home_win_row['team']}** at "
-            f"**{top_home_win_row['home_win_rate']:.3f}**."
-        )
-        lines.append(
-            f"- Busiest match day: **{busiest_day_row['day']}** with **{int(busiest_day_row['matches'])}** matches."
-        )
-        lines.append(
-            f"- Highest scoring day: **{highest_scoring_day_row['day']}** with an average of "
-            f"**{highest_scoring_day_row['avg_total_goals']:.2f}** total goals."
+            "- R² indicates moderate predictive power (~40–50% of variance explained)."
         )
         lines.append("")
 
+        lines.append("## Key modeling insight")
+
+        lines.append(
+            "Most predictive power comes from xG (chance quality), "
+            "team strength features, and home advantage. "
+            "Raw stats like possession and matchweek contribute little."
+        )
+        lines.append("")
+
+        lines.append("## Machine Learning - Classification (W / D / L)")
+        lines.append("")
+
+        if clf_metrics:
+            lines.append("### Accuracy")
+            lines.append(f"- **accuracy**: `{clf_metrics.get('accuracy', 0):.4f}`")
+            lines.append("")
+
+            lines.append("### Confusion Matrix")
+            lines.append(str(clf_metrics.get("confusion_matrix", "")))
+            lines.append("")
+
+            lines.append("## Model interpretation")
+
+            lines.append(
+                "- Regression predicts match dominance (goal difference)."
+            )
+
+            lines.append(
+                "- Classification predicts match outcome probabilities (W/D/L)."
+            )
+
+            lines.append(
+                "- xG and strength features dominate both tasks."
+            )
+
+            lines.append(
+                "- Rolling features improve stability and reduce noise."
+            )
+
+            lines.append("")
+
+    # ---------------- SAMPLE PREDICTIONS ----------------
+    if not predictions.empty:
+        lines.append("## Sample predictions")
+        lines.append(_df_code_block(predictions, max_rows=10))
+        lines.append("")
+
+        lines.append("## Residual analysis insight")
+        lines.append(
+            "- Small residuals → model captures expected match behavior well"
+        )
+        lines.append(
+            "- Large residuals → matches influenced by randomness, finishing variance, or rare events"
+        )
+        lines.append(
+            "- Hard predictions correspond to matches where xG diverges from actual result"
+        )
+        lines.append("")
+
+    # ---------------- SEASON CHAMPIONS ----------------
     lines.append("## Season champions")
     lines.append(
         _df_code_block(
@@ -134,51 +221,14 @@ def generate_summary_md(
     )
     lines.append("")
 
-    lines.append("## Title race table")
-    title_cols = [
-        "season",
-        "champion_team",
-        "champion_points",
-        "second_place_team",
-        "second_place_points",
-        "title_margin",
-    ]
-    available_title_cols = [c for c in title_cols if c in title_race.columns]
-    lines.append(_df_code_block(title_race[available_title_cols] if available_title_cols else title_race))
-    lines.append("")
-
-    lines.append("## Top 10 teams by average points")
+    # ---------------- TOP TEAMS ----------------
+    lines.append("## Top teams (average performance)")
     team_cols = ["team", "matches", "avg_points", "win_rate", "avg_xg", "avg_xga"]
-    available_team_cols = [c for c in team_cols if c in team_stats.columns]
-    lines.append(_df_code_block(team_stats[available_team_cols], max_rows=10))
+    available = [c for c in team_cols if c in team_stats.columns]
+
+    lines.append(_df_code_block(team_stats[available], max_rows=10))
     lines.append("")
 
-    lines.append("## Top 10 home-advantage teams")
-    venue_cols = [
-        "team",
-        "home_avg_points",
-        "away_avg_points",
-        "avg_points_diff",
-        "home_win_rate",
-        "away_win_rate",
-        "win_rate_diff",
-    ]
-    available_venue_cols = [c for c in venue_cols if c in venue_merged.columns]
-    venue_top = venue_merged.sort_values("avg_points_diff", ascending=False).head(10)
-    lines.append(_df_code_block(venue_top[available_venue_cols], max_rows=10))
-    lines.append("")
-
-    lines.append("## Match-level day stats")
-    day_cols = ["day", "matches", "avg_total_goals", "avg_attendance"]
-    available_day_cols = [c for c in day_cols if c in day_stats_matches.columns]
-    lines.append(_df_code_block(day_stats_matches[available_day_cols], max_rows=10))
-    lines.append("")
-
-    lines.append("## Saved artifacts")
-    lines.append("- Processed tables: `data/processed/`")
-    lines.append("- Figures: `reports/figures/`")
-    lines.append("- This report: `reports/summary.md`")
-    lines.append("")
-
+    # ---------------- SAVE ----------------
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path

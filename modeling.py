@@ -258,6 +258,7 @@ def run_linear_regression_baseline(
 
     return outputs
 
+
 def run_regression_pipeline(
     df,
     feature_cols,
@@ -303,6 +304,7 @@ def run_regression_pipeline(
         "cv_metrics": cv_metrics,
         "predictions": predictions,
     }
+
 
 def split_errors(preds: pd.DataFrame):
     preds = preds.copy()
