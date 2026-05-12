@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 
 from pipeline import run_pipeline
 from reporting import generate_summary_md
@@ -8,7 +9,11 @@ from classification_model_interpretation import (
     plot_feature_importance_per_class,
     plot_class_distribution,
     plot_probability_distribution,
-    plot_match_recap
+)
+
+from classification_model_interpretation import (
+    explain_single_match,
+    print_match_explanation
 )
 
 from visualizations import (
@@ -54,6 +59,7 @@ def main():
     )
 
     raw_df = outputs["raw_df"]
+    print(raw_df)
 
     # =========================
     # 2. FEATURE ENGINEERING
@@ -123,19 +129,41 @@ def main():
 
     y_pred = classification_outputs["predictions"]
     proba = classification_outputs["probabilities"]
-    # Feature importance (FIXED)
+
+    best_pipeline = classification_outputs["model"].best_estimator_
+    preprocessor = best_pipeline.named_steps["preprocessor"]
+
+    num_features = preprocessor.transformers_[0][2]
+    cat_features = preprocessor.transformers_[1][2]
+
+    cat_encoded = preprocessor.named_transformers_["cat"].get_feature_names_out(cat_features)
+
+    feature_names = np.concatenate([num_features, cat_encoded])
+
+    # Feature importance
     plot_feature_importance_per_class(
         classification_outputs["model"],  # pipeline, not estimator
         )
     plot_class_distribution(y_test, y_pred)
 
-    # ✔ Probability distribution
+    # Probability distribution
     plot_probability_distribution(proba)
 
-    # ✔ Match recap (sample interpretation)
-    plot_match_recap(prob_table, n_samples=5)
+    # Match recap (sample interpretation)
+    #plot_match_recap(prob_table, n_samples=5)
 
     report_path = generate_summary_md(outputs, output_path="reports/summary.md")
+
+    sample_match = classification_outputs["X_test"].iloc[[9]]
+    print("\n================ SAMPLE MATCH FEATURES ================")
+    print(sample_match.to_string(index=False).replace("  ", " "))
+    explanation = explain_single_match(
+        classification_outputs["model"],
+        sample_match,
+        feature_names
+    )
+
+    print_match_explanation(explanation)
 
     print_section("DONE")
 

@@ -59,32 +59,68 @@ def plot_probability_distribution(proba):
     plt.show()
 
 
-def plot_match_recap(pred_table, n_samples=5):
+def explain_single_match(model_pipeline, X_row, feature_names, top_k=5):
     """
-    Visual recap of sample predictions
+    Explain a single match prediction
     """
 
-    sample = pred_table.sample(n_samples).copy()
+    model = model_pipeline.best_estimator_.named_steps["model"]
+    preprocessor = model_pipeline.best_estimator_.named_steps["preprocessor"]
 
-    labels = ["L", "D", "W"]
+    # transform row
+    X_transformed = preprocessor.transform(X_row)
 
-    for i, row in sample.iterrows():
+    # prediction + probabilities
+    pred = model.predict(X_transformed)[0]
+    proba = model.predict_proba(X_transformed)[0]
 
-        probs = [
-            row.get("P_loss", np.nan),
-            row.get("P_draw", np.nan),
-            row.get("P_win", np.nan),
+    class_names = model.classes_
+
+    # coefficients
+    coefs = model.coef_
+
+    # compute contributions
+    contributions = coefs * X_transformed.toarray()
+
+    contributions_sum = contributions[0]
+
+    feature_contrib = pd.DataFrame({
+        "feature": feature_names,
+        "value": X_transformed.toarray()[0],
+        "contribution": contributions_sum
+    })
+
+    # keep only active / meaningful features
+    feature_contrib = feature_contrib[
+        feature_contrib["value"] != 0
         ]
 
-        plt.figure(figsize=(6, 3))
-        sns.barplot(x=labels, y=probs)
+    feature_contrib["abs"] = np.abs(feature_contrib["contribution"])
+    feature_contrib = feature_contrib.sort_values("abs", ascending=False)
 
-        plt.title(
-            f"Match Recap\nActual: {row['actual']} | Predicted: {row.get('predicted', 'N/A')}"
-        )
+    return {
+        "prediction": pred,
+        "probabilities": dict(zip(class_names, proba)),
+        "top_positive": feature_contrib.head(top_k),
+        "top_negative": feature_contrib.tail(top_k)
+    }
 
-        plt.ylim(0, 1)
-        plt.show()
+
+def print_match_explanation(explanation):
+
+    print("\n================ MATCH EXPLANATION ================")
+
+    print("\nPrediction:", explanation["prediction"])
+
+    print("\nProbabilities:")
+    for k, v in explanation["probabilities"].items():
+        print(f"   {k}: {v:.3f}")
+
+    print("\nStrongest positive drivers:")
+    print(explanation["top_positive"][["feature", "contribution"]])
+
+    print("\nWeakening factors:")
+    print(explanation["top_negative"][["feature", "contribution"]])
 
 
 def plot_feature_importance_per_class(pipeline):

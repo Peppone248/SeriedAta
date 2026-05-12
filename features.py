@@ -45,6 +45,43 @@ def add_match_features(df: pd.DataFrame) -> pd.DataFrame:
             df["round"].astype("string").str.extract(r"(\d+)", expand=False).astype("Int64")
         )
 
+    df = df.sort_values(["team", "date"])
+
+    df["last_5_points"] = (
+        df.groupby("team")["points"]
+            .rolling(5, min_periods=1)
+            .mean()
+            .reset_index(0, drop=True)
+    )
+
+    df["last_5_goal_diff"] = (
+        df.groupby("team")["goal_diff"]
+            .rolling(5, min_periods=1)
+            .mean()
+            .reset_index(0, drop=True)
+    )
+
+    df["last_5_xg"] = (
+        df.groupby("team")["xg"]
+            .rolling(5, min_periods=1)
+            .mean()
+            .reset_index(0, drop=True)
+    )
+
+    df["xg_trend"] = df.groupby("team")["xg"].transform(
+        lambda x: x.rolling(5, min_periods=1).mean().diff()
+    )
+
+    df["points_trend"] = df.groupby("team")["points"].transform(
+        lambda x: x.rolling(5, min_periods=1).mean().diff()
+    )
+
+    # ----- fatigue features ------
+    df["date"] = pd.to_datetime(df["date"])
+
+    df["days_rest"] = df.groupby("team")["date"].diff().dt.days
+
+    df["days_rest"] = df["days_rest"].fillna(df["days_rest"].median())
     return df
 
 

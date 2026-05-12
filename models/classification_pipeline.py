@@ -24,7 +24,13 @@ NUM_FEATURES = [
     "strength_xg_diff",
     "strength_xga_diff",
     "finishing_efficiency",
-    "defensive_efficiency"
+    "defensive_efficiency",
+    "last_5_points",
+    "last_5_goal_diff",
+    "last_5_xg",
+    "xg_trend",
+    "points_trend",
+    "days_rest"
 ]
 
 CAT_FEATURES = [
@@ -147,6 +153,7 @@ def run_classification_pipeline(df: pd.DataFrame, run_eda_flag=False):
     df = clean_data(df)
 
     X = df[NUM_FEATURES + CAT_FEATURES]
+    print(CAT_FEATURES)
     y = df["result"]
 
     X_train, X_test, y_train, y_test = train_test_split(
