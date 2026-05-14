@@ -26,7 +26,7 @@ from visualizations import (
     show_target_distribution
 )
 
-from modeling import run_regression_pipeline, split_errors
+from linear_regression_model import run_regression_pipeline, split_errors
 # from models.classification_model import (
 #    build_classification_dataset,
 #    split_classification_data,
@@ -154,11 +154,12 @@ def main():
 
     report_path = generate_summary_md(outputs, output_path="reports/summary.md")
 
-    sample_match = classification_outputs["X_test"].iloc[[9]]
+    sample_match = classification_outputs["X_test"].iloc[[16]]
     print("\n================ SAMPLE MATCH FEATURES ================")
     print(sample_match.to_string(index=False).replace("  ", " "))
     explanation = explain_single_match(
         classification_outputs["model"],
+        y_test,
         sample_match,
         feature_names
     )

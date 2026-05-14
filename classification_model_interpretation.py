@@ -59,7 +59,7 @@ def plot_probability_distribution(proba):
     plt.show()
 
 
-def explain_single_match(model_pipeline, X_row, feature_names, top_k=5):
+def explain_single_match(model_pipeline, y_true, X_row, feature_names, top_k=5):
     """
     Explain a single match prediction
     """
@@ -100,6 +100,7 @@ def explain_single_match(model_pipeline, X_row, feature_names, top_k=5):
 
     return {
         "prediction": pred,
+        "actual": y_true.iloc[16],  # or extracted match label
         "probabilities": dict(zip(class_names, proba)),
         "top_positive": feature_contrib.head(top_k),
         "top_negative": feature_contrib.tail(top_k)
@@ -110,7 +111,18 @@ def print_match_explanation(explanation):
 
     print("\n================ MATCH EXPLANATION ================")
 
-    print("\nPrediction:", explanation["prediction"])
+    prediction = explanation["prediction"]
+    actual = explanation.get("actual", None)
+
+    print("\nPrediction:", prediction)
+
+    if actual is not None:
+        print("Actual:", actual)
+
+        # correctness check
+        is_correct = prediction == actual
+
+        print("\nResult:", "CORRECT" if is_correct else "WRONG")
 
     print("\nProbabilities:")
     for k, v in explanation["probabilities"].items():
