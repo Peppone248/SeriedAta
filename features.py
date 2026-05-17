@@ -82,6 +82,37 @@ def add_match_features(df: pd.DataFrame) -> pd.DataFrame:
     df["days_rest"] = df.groupby("team")["date"].diff().dt.days
 
     df["days_rest"] = df["days_rest"].fillna(df["days_rest"].median())
+
+    # Forma ponderata: le ultime partite contano di più
+    weights = np.array([0.1, 0.15, 0.2, 0.25, 0.3])  # window 5
+    df["weighted_form"] = (
+        df.groupby("team")["points"]
+            .transform(lambda x: x.shift(1)
+                       .rolling(5, min_periods=5)
+                       .apply(lambda v: np.dot(v, weights), raw=True))
+    )
+
+    # Consistenza: deviazione standard dei punti ultimi 5
+    df["form_consistency"] = (
+        df.groupby("team")["points"]
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=3).std())
+    )
+
+    # Head-to-head storico tra le due squadre specifiche
+    df_sorted = df.sort_values(["team", "opponent", "date"])
+    df["h2h_win_rate"] = (
+        df_sorted.groupby(["team", "opponent"])["win_flag"]
+            .transform(lambda x: x.shift(1).expanding().mean())
+    )
+
+    # Stanchezza da calendario: numero di partite negli ultimi 14 giorni
+    """df["matches_last_14d"] = (
+        df.groupby("team")["date"]
+            .transform(lambda x: x.expanding()
+                       .apply(lambda dates: ((x.iloc[len(dates) - 1] - dates[:-1])
+                                             .dt.days <= 14).sum()))
+    )"""
+
     return df
 
 
@@ -112,6 +143,67 @@ def build_team_strength_features(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     return team_strength
+
+
+def build_cumulative_team_strength(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcola le feature di forza squadra senza data leakage.
+
+    Problema:
+        la media globale include partite future rispetto a quella da predire,
+        gonfiando artificialmente le correlazioni con il risultato.
+
+    Soluzione: expanding mean con shift(1) — ogni riga vede solo
+    la media delle partite precedenti della stessa squadra.
+
+    Nuove colonne aggiunte:
+        cum_avg_points   media cumulativa punti (storico precedente)
+        cum_avg_xg       media cumulativa xG
+        cum_avg_xga      media cumulativa xGA
+        strength_points_diff   differenza team vs avversario (punti)
+        strength_xg_diff       differenza team vs avversario (xG)
+        strength_xga_diff      differenza team vs avversario (xGA)
+
+    Le prime partite di ogni squadra avranno NaN (nessuno storico disponibile).
+    Gestite con fillna(0) alla fine — neutrali per il modello.
+
+    """
+    df = df.copy()
+    df = df.sort_values(["team", "date"])
+
+    # ── medie cumulative per il team (shift(1): esclude la partita corrente) ──
+    for col, src in [("cum_avg_points", "points"), ("cum_avg_xg", "xg"), ("cum_avg_xga", "xga")]:
+        df[col] = (
+            df.groupby("team")[src]
+                .transform(lambda x: x.shift(1).expanding().mean())
+        )
+
+    # ── stesse medie per l'avversario: merge su (opponent, date) ──
+    opp_stats = (
+        df[["team", "date", "cum_avg_points", "cum_avg_xg", "cum_avg_xga"]]
+            .rename(columns={
+            "team": "opponent",
+            "cum_avg_points": "opp_cum_avg_points",
+            "cum_avg_xg": "opp_cum_avg_xg",
+            "cum_avg_xga": "opp_cum_avg_xga",
+        })
+    )
+
+    df = df.merge(opp_stats, on=["opponent", "date"], how="left")
+
+    # ── differenze team vs avversario ──
+    df["strength_points_diff"] = df["cum_avg_points"] - df["opp_cum_avg_points"]
+    df["strength_xg_diff"] = df["cum_avg_xg"] - df["opp_cum_avg_xg"]
+    df["strength_xga_diff"] = df["cum_avg_xga"] - df["opp_cum_avg_xga"]
+
+    # ── le prime partite di ogni team non hanno storico → 0 (neutro) ──
+    strength_cols = [
+        "cum_avg_points", "cum_avg_xg", "cum_avg_xga",
+        "strength_points_diff", "strength_xg_diff", "strength_xga_diff",
+    ]
+    df[strength_cols] = df[strength_cols].fillna(0)
+
+    return df
 
 
 def add_team_strength_to_matches(df: pd.DataFrame, team_strength: pd.DataFrame) -> pd.DataFrame:
@@ -157,6 +249,27 @@ def add_strength_differences(df: pd.DataFrame) -> pd.DataFrame:
     df["strength_xg_diff"] = df["home_avg_xg"] - df["away_avg_xg"]
     df["strength_xga_diff"] = df["home_avg_xga"] - df["away_avg_xga"]
     df["strength_goal_diff"] = df["home_avg_goals_for"] - df["away_avg_goals_for"]
+
+    return df
+
+
+def add_new_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Aggiunge le nuove feature al DataFrame."""
+    df = df.copy()
+    df = df.sort_values(["team", "date"])
+
+    # overperformance rispetto alle attese
+    df["finishing_over_xg"] = df["gf"] - df["xg"]
+
+    # qualità media per conclusione
+    df["xg_per_shot"] = np.where(df["sh"] > 0, df["xg"] / df["sh"], np.nan)
+
+    # cambio formazione rispetto alla partita precedente
+    df["prev_formation"] = df.groupby("team")["formation"].shift(1)
+    df["formation_changed"] = (
+        df["formation"] != df["prev_formation"]
+    ).astype("int8")
+    df["formation_changed"] = df["formation_changed"].fillna(0)
 
     return df
 

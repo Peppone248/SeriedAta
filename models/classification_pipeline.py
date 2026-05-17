@@ -10,7 +10,8 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, log_loss
-from sklearn.metrics import confusion_matrix
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
 
 
 NUM_FEATURES = [
@@ -30,7 +31,13 @@ NUM_FEATURES = [
     "last_5_xg",
     "xg_trend",
     "points_trend",
-    "days_rest"
+    "days_rest",
+    "cum_avg_points",
+    "cum_avg_xg",
+    "cum_avg_xga",
+    "formation_changed",
+    #"matches_last_14d",
+    "weighted_form"
 ]
 
 CAT_FEATURES = [
@@ -80,7 +87,10 @@ def clean_data(df: pd.DataFrame):
     # drop rows where target or key features are missing
     df = df.dropna(subset=NUM_FEATURES + CAT_FEATURES + ["result"])
 
+    df = df.sort_values(by=["date"], ascending=False)
+
     return df
+
 
 def build_preprocessor():
     return ColumnTransformer(
@@ -112,11 +122,15 @@ def train_model(X_train, y_train, pipeline):
         "model__class_weight": [None, "balanced"]
     }
 
+    # Cross validation to respect temporal data,
+    # avoiding to use future match to predict old matches
+    tscv = TimeSeriesSplit(n_splits=5)
+
     grid = GridSearchCV(
         pipeline,
         param_grid,
-        cv=5,
-        scoring="accuracy",
+        cv=tscv,
+        scoring="neg_log_loss",
         n_jobs=-1
     )
 

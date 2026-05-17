@@ -14,7 +14,7 @@ from aggregations import (
     build_title_race_table
 )
 from cleaning import clean_matches, load_matches
-from features import add_match_features, add_match_identifiers, build_team_strength_features, add_team_strength_to_matches, add_strength_differences
+from features import add_match_features, add_match_identifiers, build_team_strength_features, build_cumulative_team_strength, add_strength_differences
 from stats import basic_statistics
 from validation import validate_raw_values, validate_team_season_stats
 from output_utils import save_outputs
@@ -50,9 +50,8 @@ def run_pipeline(
     team_counts, venue_merged = build_home_away_comparison(team_by_venue)
     daily_stats = build_daily_team_row_stats(raw_df)
     match_df, day_stats_matches = build_match_level_day_stats(raw_df)
-    team_strength = build_team_strength_features(raw_df)
-    raw_df = add_team_strength_to_matches(raw_df, team_strength)
-    raw_df = add_strength_differences(raw_df)
+    raw_df = build_cumulative_team_strength(raw_df)
+    # raw_df = add_strength_differences(raw_df)
 
     aggregation_checks = validate_team_season_stats(team_season_stats)
 
