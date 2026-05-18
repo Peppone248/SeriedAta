@@ -5,8 +5,6 @@ Funziona su ClassificationResult e RegressionResult da models/base.py.
 Poiché tutti i modelli restituiscono lo stesso contratto, non ci sono
 if/else né chiavi hardcoded: si itera direttamente sulla lista di risultati.
 
-Sostituisce la parte di visualizzazione di model_comparison.py
-(che rimane per il confronto multi-modello su split identico).
 """
 
 from __future__ import annotations

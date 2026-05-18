@@ -1,5 +1,5 @@
 """
-dashboard.py — Serie A Analytics Dashboard  (v2)
+Serie A Analytics Dashboard
 Avvia con: streamlit run dashboard.py
 
 Usa automaticamente i file in data/processed/ se presenti.
@@ -190,10 +190,10 @@ def tab_overview(ts, p, sel_seasons):
     top_def = data.loc[data["avg_xga"].idxmin()]
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("🏆 Campione", champ["team"], f"{int(champ['total_points'])} punti")
-    c2.metric("⚡ Miglior attacco", top_xg["team"], f"{top_xg['avg_xg']:.2f} xG/match")
-    c3.metric("🔒 Miglior difesa", top_def["team"], f"{top_def['avg_xga']:.2f} xGA/match")
-    c4.metric("⚽ Gol/match", f"{data['avg_gf'].mean():.2f}", f"stagione {season}")
+    c1.metric("Campione", champ["team"], f"{int(champ['total_points'])} punti")
+    c2.metric("Miglior attacco", top_xg["team"], f"{top_xg['avg_xg']:.2f} xG/match")
+    c3.metric("Miglior difesa", top_def["team"], f"{top_def['avg_xga']:.2f} xGA/match")
+    c4.metric("Gol/match", f"{data['avg_gf'].mean():.2f}", f"stagione {season}")
 
     fig = go.Figure()
     fig.add_trace(go.Bar(y=data["team"], x=data["total_points"], name="Punti",
@@ -278,7 +278,7 @@ def tab_title_race(p):
 # ─────────────────────────────────────────────
 
 def tab_home_away(p):
-    st.header("🏟️ Home vs Away")
+    st.header("Home vs Away")
 
     if "venue_merged" not in p:
         st.info("venue_merged.csv non trovato.");
@@ -330,7 +330,7 @@ def tab_home_away(p):
 # ─────────────────────────────────────────────
 
 def tab_team_stats(p):
-    st.header("📋 Statistiche storiche squadre")
+    st.header("Statistiche storiche squadre")
 
     if "team_stats" not in p:
         st.info("team_stats.csv non trovato.");
