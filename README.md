@@ -1,8 +1,8 @@
 # Serie dAta
 
-End-to-end data science project on Serie A match statistics (2020–2025).
-Covers the full pipeline from raw CSV ingestion through feature engineering,
-multi-model classification, regression, and per-match interpretability reports.
+Project based on Serie A match statistics (2020–2025). Has the aim to predict matches' outcome based on statistics
+creating aggregated features based on the datasets. Try to understand which features influence most the predictions without considering match events and players individual statistics.
+It covers the full pipeline from raw CSV ingestion through feature engineering, multi-model classification, regression, and per-match interpretability reports.
 
 ---
 
@@ -149,6 +149,12 @@ Feature sets for each model are defined in `config.py`:
 - **Logistic** uses `LOGISTIC_NUM_FEATURES` (includes `finishing_efficiency`, `defensive_efficiency`)
 - **XGBoost and LightGBM** use their respective extended sets (adds `dist`, `h2h_win_rate`, `form_consistency`)
 - **`model_comparison.py`** uses `NUM_FEATURES` (alias for the logistic set) so all models train on identical features for a fair comparison
+
+## ML models comparision
+<img width="1800" height="500" alt="models_comparison" src="https://github.com/user-attachments/assets/4cc06804-9c3e-48e5-b184-e6bb5980e146" />
+
+## SHAP features interpretability
+<img width="1000" height="600" alt="top20_features_shap" src="https://github.com/user-attachments/assets/59353ca9-cae2-425f-baf6-b5266e320b92" />
 
 ---
 
