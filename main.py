@@ -1,33 +1,57 @@
 """
 main.py — entry point unico del progetto Serie A Match Intelligence.
 
-Sostituisce main.py, main_xgboost.py e main_goal_diff.py.
-Ogni sezione è una funzione autonoma richiamabile indipendentemente.
+Flusso completo:
+  1.  Data pipeline + feature engineering
+  2.  Feature analysis (correlazione Pearson + Mutual Information)
+  3.  Classificazione — Logistic Regression
+  4.  Classificazione — XGBoost  (con threshold tuning per i draw)
+  5.  Classificazione — LightGBM
+  6.  Regressione — goal diff (Linear Regression baseline)
+  7.  Confronto modelli (leaderboard + grafici)
+  8.  Backtesting walk-forward stagione per stagione
+  9.  Report markdown
+  10. Interpretabilità — Logistic (coefficienti per classe)
+  11. Interpretabilità — XGBoost (SHAP globale + per classe + singola partita)
 
-Flusso:
-  1. Data pipeline + feature engineering
-  2. Classificazione — Logistic Regression
-  3. Classificazione — XGBoost
-  4. Regressione — goal diff
-  5. Confronto modelli (leaderboard + grafici)
-  6. Interpretabilità — Logistic (coefficienti per classe)
-  7. Interpretabilità — XGBoost (SHAP globale + per classe + singola partita)
+Ogni sezione è una funzione autonoma: puoi commentarne una in main()
+senza toccare il resto.
 """
 
+import warnings
 import pandas as pd
 import numpy as np
+
+warnings.filterwarnings(
+    "ignore",
+    message="Parameters:.*scale_pos_weight.*are not used",
+    category=UserWarning,
+)
 
 from pipeline import run_pipeline
 from features import add_match_features, add_new_features, add_rolling_team_form
 from config import (
     REGRESSION_FEATURES, REGRESSION_TARGET,
-    XGBOOST_NUM_FEATURES, CAT_FEATURES, LOGISTIC_NUM_FEATURES
+    LOGISTIC_NUM_FEATURES, XGBOOST_NUM_FEATURES, LGBM_NUM_FEATURES,
+    CAT_FEATURES,
 )
 
 from models.base import RegressionResult
-from models.logistic_pipeline import run_classification_pipeline as run_logistic
-from models.xgboost_pipeline import run_classification_pipeline as run_xgboost
-from models.lgbm_pipeline import run_classification_pipeline as run_lgbm
+from models.logistic_pipeline import (
+    run_classification_pipeline as run_logistic,
+    build_model_pipeline as build_logistic,
+    train_model as train_logistic,
+)
+from models.xgboost_pipeline import (
+    run_classification_pipeline as run_xgboost,
+    build_model_pipeline as build_xgboost,
+    train_model as train_xgboost,
+)
+from models.lgbm_pipeline import (
+    run_classification_pipeline as run_lgbm,
+    build_model_pipeline as build_lgbm,
+    train_model as train_lgbm,
+)
 
 from linear_regression_model import run_regression_pipeline
 from feature_selection import run_feature_analysis
@@ -38,6 +62,14 @@ from evaluation import (
     plot_confusion_matrices,
     print_regression_leaderboard,
 )
+
+from backtesting import (
+    compare_models_backtest,
+    plot_backtest_results,
+    print_backtest_summary,
+)
+
+from reporting import generate_summary_md
 
 # ── interpretabilità logistic ────────────────────────────────────────────────
 from classification_model_interpretation import (
@@ -56,12 +88,7 @@ from classification_model_interpretation_xgboost import (
     plot_match_shap_report,
 )
 
-from backtesting import (compare_models_backtest,
-                         plot_backtest_results,
-                         print_backtest_summary)
-
-from reporting import generate_summary_md
-
+pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 1200)
 
 
@@ -76,9 +103,12 @@ def _section(title: str) -> None:
 def build_dataset(csv_path: str = "data/raw/matches_seriea.csv"):
     """
     Pipeline dati + feature engineering completo.
-    Restituisce (df, pipeline_outputs) — il secondo serve a generate_report().
+    Restituisce (df, pipeline_outputs):
+      - df               → DataFrame arricchito, usato da tutti i modelli
+      - pipeline_outputs → dict con team_stats, season_champions, ecc.
+                           usato da generate_report()
     """
-    _section("DATA PIPELINE & FEATURE ENGINEERING")
+    _section("1 — DATA PIPELINE & FEATURE ENGINEERING")
 
     pipeline_outputs = run_pipeline(csv_path, save=True, output_dir="data/processed")
     df = pipeline_outputs["raw_df"]
@@ -95,74 +125,87 @@ def build_dataset(csv_path: str = "data/raw/matches_seriea.csv"):
 
 # ─── SEZIONE 2 — FEATURE ANALYSIS ────────────────────────────────────────────
 
-def run_feature_selection(df: pd.DataFrame, corr_threshold: float = 0.90, mi_threshold: float = 0.01) -> None:
+def run_feature_selection(
+        df: pd.DataFrame,
+        corr_threshold: float = 0.90,
+        mi_threshold: float = 0.01,
+) -> None:
     """
-    Analisi di ridondanza su tutti e tre i set di feature numeriche.
+    Analisi di ridondanza (Pearson + Mutual Information) sui set numerici.
     Non modifica config.py — stampa suggerimenti da valutare manualmente.
-
-    I set XGBoost e LightGBM condividono le stesse feature, quindi
-    viene analizzato un solo plot per entrambi.
+    XGBoost e LightGBM condividono lo stesso set → un solo plot per entrambi.
     """
-    _section("FEATURE ANALYSIS — CORRELATION & REDUNDANCY")
+    _section("2 — FEATURE ANALYSIS: CORRELATION & REDUNDANCY")
 
     run_feature_analysis(
         df, LOGISTIC_NUM_FEATURES,
-        label="Logistic Regression", corr_threshold=corr_threshold, mi_threshold= mi_threshold
+        label="Logistic Regression",
+        corr_threshold=corr_threshold,
+        mi_threshold=mi_threshold,
     )
-
-    # XGBoost e LightGBM usano lo stesso set — un'analisi copre entrambi
     run_feature_analysis(
         df, XGBOOST_NUM_FEATURES,
-        label="XGBoost / LightGBM", corr_threshold=corr_threshold, mi_threshold= mi_threshold
+        label="XGBoost / LightGBM",
+        corr_threshold=corr_threshold,
+        mi_threshold=mi_threshold,
     )
 
-# ─── SEZIONE 3 & 4 — CLASSIFICAZIONE ─────────────────────────────────────────
+
+# ─── SEZIONI 3-5 — CLASSIFICAZIONE ───────────────────────────────────────────
 
 def run_classifiers(df: pd.DataFrame):
     """
-    Allena tutti i classificatori e stampa un riepilogo immediato.
+    Allena i tre classificatori e stampa un riepilogo immediato.
     Tutti restituiscono ClassificationResult → confrontabili direttamente.
+
+    XGBoost viene eseguito due volte (senza e con threshold tuning) per
+    mostrare esplicitamente il guadagno su F1-D.
     """
-    _section("CLASSIFICAZIONE — LOGISTIC REGRESSION")
+    _section("3 — CLASSIFICAZIONE: LOGISTIC REGRESSION")
     logistic = run_logistic(df)
     _print_clf_summary(logistic)
 
-    _section("CLASSIFICAZIONE — XGBOOST")
-    xgboost = run_xgboost(df, tune_draw_threshold=False)
+    _section("4 — CLASSIFICAZIONE: XGBOOST")
+    xgboost_base = run_xgboost(df, tune_draw_threshold=False)
     xgboost_tuned = run_xgboost(df, tune_draw_threshold=True)
-    _print_clf_summary(xgboost)
-    print_classification_leaderboard([xgboost_tuned, xgboost])
+    print("\n  Impatto del draw threshold tuning:")
+    print_classification_leaderboard([xgboost_base, xgboost_tuned])
 
-    _section("CLASSIFICAZIONE — LIGHTGBM")
+    _section("5 — CLASSIFICAZIONE: LIGHTGBM")
     lgbm = run_lgbm(df)
     _print_clf_summary(lgbm)
 
-    return logistic, xgboost, lgbm
+    # restituisce xgboost_tuned come versione canonico per i passi successivi
+    return logistic, xgboost_tuned, lgbm
 
 
 def _print_clf_summary(r) -> None:
     print(f"  Accuracy : {r.accuracy:.4f}")
     print(f"  F1 macro : {r.f1_macro:.4f}")
-    print(f"  F1 [L={r.f1_per_class['L']:.3f}  D={r.f1_per_class['D']:.3f}  W={r.f1_per_class['W']:.3f}]")
+    print(f"  F1 [L={r.f1_per_class['L']:.3f}"
+          f"  D={r.f1_per_class['D']:.3f}"
+          f"  W={r.f1_per_class['W']:.3f}]")
     if r.log_loss is not None:
         print(f"  Log loss : {r.log_loss:.4f}")
 
 
-# ─── SEZIONE 5 — REGRESSIONE ─────────────────────────────────────────────────
+# ─── SEZIONE 6 — REGRESSIONE ─────────────────────────────────────────────────
 
 def run_regression(df: pd.DataFrame) -> RegressionResult:
     """
-    Wrapper che converte l'output di run_regression_pipeline
-    (dict) in RegressionResult per la leaderboard unificata.
+    Baseline lineare per la predizione del goal difference.
+    Wrappa il dict di run_regression_pipeline in RegressionResult
+    per la leaderboard unificata.
     """
-    _section("REGRESSIONE — GOAL DIFF")
+    _section("6 — REGRESSIONE: GOAL DIFF")
 
     raw = run_regression_pipeline(df, REGRESSION_FEATURES, REGRESSION_TARGET)
-
     tm = raw["test_metrics"]
     cv = raw["cv_metrics"]
+
     print(f"  Test → MAE={tm['mae']:.4f}  RMSE={tm['rmse']:.4f}  R²={tm['r2']:.4f}")
-    print(f"  CV   → MAE={cv['cv_mae_mean']:.4f}  RMSE={cv['cv_rmse_mean']:.4f}  R²={cv['cv_r2_mean']:.4f}")
+    print(f"  CV   → MAE={cv['cv_mae_mean']:.4f}  "
+          f"RMSE={cv['cv_rmse_mean']:.4f}  R²={cv['cv_r2_mean']:.4f}")
 
     return RegressionResult(
         model_name="Linear Regression (goal diff)",
@@ -177,82 +220,33 @@ def run_regression(df: pd.DataFrame) -> RegressionResult:
     )
 
 
-# ─── SEZIONE 6 — CONFRONTO MODELLI ───────────────────────────────────────────
+# ─── SEZIONE 7 — CONFRONTO MODELLI ───────────────────────────────────────────
 
 def compare_models(logistic, xgboost, lgbm, regression) -> None:
     """
-    Confronto unificato: leaderboard testuale + grafici comparativi.
-    Funziona su qualsiasi lista di ClassificationResult / RegressionResult.
+    Leaderboard testuale + grafici comparativi su ClassificationResult list.
+    Aggiungere un modello = aggiungerlo alla lista, nient'altro.
     """
-    _section("CONFRONTO MODELLI")
+    _section("7 — CONFRONTO MODELLI")
 
     print_classification_leaderboard([logistic, xgboost, lgbm])
     plot_classification_comparison([logistic, xgboost, lgbm])
     plot_confusion_matrices([logistic, xgboost, lgbm])
-
     print_regression_leaderboard([regression])
 
 
-# ─── SEZIONE 7 — REPORT ──────────────────────────────────────────────────────
-
-def generate_report(
-        pipeline_outputs: dict,
-        best_clf,
-        regression: RegressionResult,
-        output_path: str = "reports/summary.md",
-) -> None:
-    """
-    Assembla il dict atteso da generate_summary_md e scrive il report.
-
-    Args:
-        pipeline_outputs: dict restituito da run_pipeline (contiene team_stats,
-                          season_champions, venue_merged, ecc.)
-        best_clf:         ClassificationResult del modello da includere nel report.
-                          Tipicamente il modello con f1_macro più alto.
-        regression:       RegressionResult del modello di regressione.
-    """
-    _section("REPORT")
-
-    pipeline_outputs["ml_outputs"] = {
-        "classification": best_clf,
-        "regression": {
-            "test_metrics": {
-                "mae": regression.mae,
-                "rmse": regression.rmse,
-                "r2": regression.r2,
-            },
-            "cv_metrics": {
-                "cv_mae_mean": regression.cv_mae,
-                "cv_rmse_mean": regression.cv_rmse,
-                "cv_r2_mean": regression.cv_r2,
-            },
-            "predictions": regression.predictions,
-        },
-    }
-
-    report_path = generate_summary_md(pipeline_outputs, output_path=output_path)
-    print(f"  Report salvato in: {report_path}")
-
-
-# ─── SEZIONE 8 — INTERPRETABILITÀ LOGISTIC ───────────────────────────────────
-
-def interpret_logistic(logistic) -> None:
-    _section("INTERPRETABILITÀ — LOGISTIC REGRESSION")
-
-    plot_feature_importance_per_class(logistic.model)
-    plot_class_distribution(logistic.y_test, logistic.predictions)
-    plot_probability_distribution(logistic.probabilities)
-
-
-# ─── SEZIONE 9 — BACKTESTING ─────────────────────────────────────────────────
+# ─── SEZIONE 8 — BACKTESTING ─────────────────────────────────────────────────
 
 def run_backtesting(df: pd.DataFrame, logistic, xgboost, lgbm) -> None:
     """
     Walk-forward backtest stagione per stagione su tutti e tre i modelli.
-    Usa best_params dal training principale per evitare GridSearch
-    su ogni fold — il backtest misura la stabilità, non il tuning.
+
+    Usa best_params_ dal training principale per evitare GridSearch
+    su ogni fold: il backtest misura la stabilità nel tempo, non il tuning.
+
+    Metrica chiave: std_f1_macro — se > 0.10 c'è drift tra stagioni.
     """
-    _section("BACKTESTING — WALK-FORWARD PER STAGIONE")
+    _section("8 — BACKTESTING: WALK-FORWARD PER STAGIONE")
 
     model_configs = [
         {
@@ -288,14 +282,64 @@ def run_backtesting(df: pd.DataFrame, logistic, xgboost, lgbm) -> None:
     print_backtest_summary(backtest_results)
     plot_backtest_results(backtest_results)
 
-# ─── SEZIONE 10 — INTERPRETABILITÀ XGBOOST (SHAP) ─────────────────────────────
 
-def interpret_xgboost(df: pd.DataFrame, xgboost) -> None:
+# ─── SEZIONE 9 — REPORT ──────────────────────────────────────────────────────
+
+def generate_report(
+        pipeline_outputs: dict,
+        best_clf,
+        regression: RegressionResult,
+        output_path: str = "reports/summary.md",
+) -> None:
     """
-    SHAP: importanza globale, per classe, beeswarm e spiegazione singola partita.
+    Assembla il dict atteso da generate_summary_md e scrive il report.
+    Passa il modello con f1_macro più alto — scelto automaticamente in main().
+    """
+    _section("9 — REPORT")
+
+    pipeline_outputs["ml_outputs"] = {
+        "classification": best_clf,
+        "regression": {
+            "test_metrics": {
+                "mae": regression.mae,
+                "rmse": regression.rmse,
+                "r2": regression.r2,
+            },
+            "cv_metrics": {
+                "cv_mae_mean": regression.cv_mae,
+                "cv_rmse_mean": regression.cv_rmse,
+                "cv_r2_mean": regression.cv_r2,
+            },
+            "predictions": regression.predictions,
+        },
+    }
+
+    report_path = generate_summary_md(pipeline_outputs, output_path=output_path)
+    print(f"  Report salvato in: {report_path}")
+
+
+# ─── SEZIONE 10 — INTERPRETABILITÀ LOGISTIC ──────────────────────────────────
+
+def interpret_logistic(logistic) -> None:
+    _section("10 — INTERPRETABILITÀ: LOGISTIC REGRESSION")
+
+    plot_feature_importance_per_class(logistic.model)
+    plot_class_distribution(logistic.y_test, logistic.predictions)
+    plot_probability_distribution(logistic.probabilities)
+
+
+# ─── SEZIONE 11 — INTERPRETABILITÀ XGBOOST (SHAP) ────────────────────────────
+
+def interpret_xgboost(df: pd.DataFrame, xgboost, sample_idx: int = 0) -> None:
+    """
+    SHAP globale, per classe, beeswarm + spiegazione singola partita.
     Tutto il codice SHAP rimane in classification_model_interpretation_xgboost.py.
+
+    Args:
+        sample_idx: indice in X_test della partita da spiegare.
+                    Cambia questo valore per analizzare un match diverso.
     """
-    _section("INTERPRETABILITÀ — XGBOOST (SHAP)")
+    _section("11 — INTERPRETABILITÀ: XGBOOST (SHAP)")
 
     grid = xgboost.model
     X_test = xgboost.X_test
@@ -307,15 +351,12 @@ def interpret_xgboost(df: pd.DataFrame, xgboost) -> None:
     plot_shap_per_class(grid, X_test)
     plot_shap_beeswarm(grid, X_test, class_idx=2, class_name="W")
 
-    _section("SPIEGAZIONE SINGOLA PARTITA (XGBOOST — SHAP)")
+    _section("11b — SPIEGAZIONE SINGOLA PARTITA (SHAP)")
 
     y_test = xgboost.y_test
-    sample_idx = 48  # change here to select another match
-
     sample_match = X_test.iloc[[sample_idx]]
     true_label = y_test.iloc[sample_idx]
 
-    # ── identità della partita ────────────────────────────────────────────
     team = sample_match["team"].values[0]
     opponent = sample_match["opponent"].values[0]
     venue = sample_match["venue"].values[0]
@@ -326,8 +367,12 @@ def interpret_xgboost(df: pd.DataFrame, xgboost) -> None:
     print(f"  Esito reale: {true_label}")
     print()
 
-    X_background = df[XGBOOST_NUM_FEATURES + CAT_FEATURES].sample(n=300, random_state=42)
-    explanation = explain_single_match(grid, sample_match, X_background, true_label, top_k=8)
+    X_background = df[XGBOOST_NUM_FEATURES + CAT_FEATURES].sample(
+        n=300, random_state=42
+    )
+    explanation = explain_single_match(
+        grid, sample_match, X_background, true_label, top_k=8
+    )
     plot_match_shap_report(explanation, top_k=10)
     print_match_explanation(explanation)
 
@@ -335,24 +380,34 @@ def interpret_xgboost(df: pd.DataFrame, xgboost) -> None:
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # ── 1. dati ───────────────────────────────────────────────────────────
     df, pipeline_outputs = build_dataset()
 
+    # ── 2. analisi feature (commenta per saltare) ─────────────────────────
     run_feature_selection(df)
 
+    # ── 3-5. classificazione ──────────────────────────────────────────────
     logistic, xgboost, lgbm = run_classifiers(df)
+
+    # ── 6. regressione ────────────────────────────────────────────────────
     regression = run_regression(df)
 
+    # ── 7. confronto ──────────────────────────────────────────────────────
     compare_models(logistic, xgboost, lgbm, regression)
 
-    # passa il modello con f1_macro più alto al report
+    # ── 8. backtesting ────────────────────────────────────────────────────
+    run_backtesting(df, logistic, xgboost, lgbm)
+
+    # ── 9. report (modello migliore per f1_macro) ─────────────────────────
     best_clf = max([logistic, xgboost, lgbm], key=lambda r: r.f1_macro)
     generate_report(pipeline_outputs, best_clf, regression)
 
+    # ── 10-11. interpretabilità ───────────────────────────────────────────
     interpret_logistic(logistic)
-    #interpret_xgboost(df, xgboost)
+    interpret_xgboost(df, xgboost, sample_idx=48)
 
     _section("DONE")
-    print("Pipeline completata.")
+    print("  Pipeline completata.")
 
 
 if __name__ == "__main__":

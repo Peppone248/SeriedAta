@@ -100,12 +100,12 @@ def add_match_features(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Stanchezza da calendario: numero di partite negli ultimi 14 giorni
-    df["matches_last_14d"] = (
+    """df["matches_last_14d"] = (
         df.groupby("team")["date"]
             .transform(lambda x: x.expanding()
                        .apply(lambda dates: ((x.iloc[len(dates) - 1] - dates[:-1])
                                              .dt.days <= 14).sum()))
-    )
+    )"""
 
     return df
 

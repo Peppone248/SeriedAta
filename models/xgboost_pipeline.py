@@ -1,7 +1,10 @@
 """
 models/xgboost_pipeline.py — pipeline XGBoost con split temporale.
 
-Restituisce ClassificationResult per confronto con Logistic.
+Restituisce ClassificationResult per confronto uniforme con Logistic.
+Sostituisce models/classification_pipeline_xgboost.py.
+
+La logica SHAP è in classification_model_interpretation_xgboost.py (invariata).
 
 Cambiamenti rispetto alla versione precedente:
   - Feature list importata da config.py (non più definita inline)
@@ -26,7 +29,6 @@ from sklearn.metrics import (
     f1_score, log_loss,
 )
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
@@ -50,6 +52,7 @@ def temporal_train_test_split(df: pd.DataFrame, test_ratio: float = 0.2):
     """
     Split temporale: le ultime `test_ratio` righe (per data) vanno nel test.
     Evita data leakage rispetto a train_test_split con stratify.
+    Pubblica perché usata da model_comparison.py.
     """
     cutoff = int(len(df) * (1 - test_ratio))
     return df.iloc[:cutoff], df.iloc[cutoff:]
@@ -59,7 +62,7 @@ def temporal_train_test_split(df: pd.DataFrame, test_ratio: float = 0.2):
 
 def build_preprocessor() -> ColumnTransformer:
     """
-    Usata da model_comparison.py.
+    Pubblica perché usata da model_comparison.py.
     """
     return ColumnTransformer(transformers=[
         ("num", StandardScaler(), NUM_FEATURES),
@@ -85,13 +88,20 @@ def build_model_pipeline() -> Pipeline:
 # ─── TRAINING ────────────────────────────────────────────────────────────────
 
 def train_model(X_train, y_train, pipeline) -> GridSearchCV:
+    """
+    Nota sul bilanciamento delle classi:
+      scale_pos_weight è ignorato da XGBoost con objective='multi:softprob'
+      (funziona solo per binary:logistic). Il bilanciamento in multiclasse
+      si ottiene con sample_weight nel fit(), calcolato da compute_sample_weight.
+    """
+    from sklearn.utils.class_weight import compute_sample_weight
+
     param_grid = {
         "model__n_estimators": [100, 300],
         "model__max_depth": [3, 5],
         "model__learning_rate": [0.05, 0.1],
         "model__subsample": [0.8, 1.0],
         "model__colsample_bytree": [0.8, 1.0],
-        "model__sale_pos_weight": [1],
     }
     grid = GridSearchCV(
         pipeline,
@@ -101,16 +111,14 @@ def train_model(X_train, y_train, pipeline) -> GridSearchCV:
         n_jobs=-1,
         verbose=1,
     )
-    grid.fit(X_train, y_train)
+
+    # sample_weight bilancia W / D / L proporzionalmente alla loro frequenza
+    sample_weights = compute_sample_weight("balanced", y_train)
+    grid.fit(X_train, y_train, model__sample_weight=sample_weights)
+
     print(f"  Best params:      {grid.best_params_}")
     print(f"  Best CV f1_macro: {grid.best_score_:.4f}")
-
-    calibrated = CalibratedClassifierCV(
-                 grid.best_estimator_,
-                 method="isotonic", # più flessibile di sigmoid per dataset > 1000 righe
-                 cv=5)
-    calibrated.fit(X_train, y_train)
-    return calibrated
+    return grid
 
 
 # ─── EVALUATION ──────────────────────────────────────────────────────────────
@@ -135,6 +143,7 @@ def _compute_metrics(y_test, y_pred, y_proba, le: LabelEncoder) -> dict:
         "predictions": y_pred,
         "probabilities": y_proba,
     }
+
 
 def find_optimal_draw_threshold(
     y_val: pd.Series,
@@ -189,6 +198,7 @@ def _predict_with_draw_threshold(
             preds.append(classes[best])
     return np.array(preds)
 
+
 # ─── TABELLE OUTPUT ──────────────────────────────────────────────────────────
 
 def _build_prediction_table(X_test, y_test, y_pred) -> pd.DataFrame:
@@ -228,21 +238,9 @@ def plot_confusion_matrix(y_test, y_pred) -> None:
 def run_classification_pipeline(
         df: pd.DataFrame,
         run_eda_flag: bool = False,
-        tune_draw_threshold: bool = True,
+        tune_draw_threshold: bool = True,  # ← nuovo parametro
 ) -> ClassificationResult:
-    """
-    Pipeline completa XGBoost con split temporale.
-
-    Args:
-        df:           DataFrame con feature già costruite (output di features.py).
-        run_eda_flag: non usato, mantenuto per compatibilità firma con logistic.
-        tune_draw_threshold:
-
-    Returns:
-        ClassificationResult — stesso contratto restituito da logistic_pipeline.
-    """
     df = clean_data(df)
-
     train_df, test_df = temporal_train_test_split(df, test_ratio=0.2)
 
     # ── split val dal training (ultimi 15% del train) ─────────────────────
