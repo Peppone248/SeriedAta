@@ -26,6 +26,7 @@ from sklearn.metrics import (
     f1_score, log_loss,
 )
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
@@ -90,6 +91,7 @@ def train_model(X_train, y_train, pipeline) -> GridSearchCV:
         "model__learning_rate": [0.05, 0.1],
         "model__subsample": [0.8, 1.0],
         "model__colsample_bytree": [0.8, 1.0],
+        "model__sale_pos_weight": [1],
     }
     grid = GridSearchCV(
         pipeline,
@@ -102,7 +104,13 @@ def train_model(X_train, y_train, pipeline) -> GridSearchCV:
     grid.fit(X_train, y_train)
     print(f"  Best params:      {grid.best_params_}")
     print(f"  Best CV f1_macro: {grid.best_score_:.4f}")
-    return grid
+
+    calibrated = CalibratedClassifierCV(
+                 grid.best_estimator_,
+                 method="isotonic", # più flessibile di sigmoid per dataset > 1000 righe
+                 cv=5)
+    calibrated.fit(X_train, y_train)
+    return calibrated
 
 
 # ─── EVALUATION ──────────────────────────────────────────────────────────────
@@ -128,6 +136,58 @@ def _compute_metrics(y_test, y_pred, y_proba, le: LabelEncoder) -> dict:
         "probabilities": y_proba,
     }
 
+def find_optimal_draw_threshold(
+    y_val: pd.Series,
+    y_proba_val: np.ndarray,
+    le: LabelEncoder,
+    search_range: tuple = (0.20, 0.45),
+    step: float = 0.01,
+) -> float:
+    """
+    Cerca il draw_threshold che massimizza F1-D su un validation set.
+    Non toccare mai il test set per questa ricerca — sarebbe leakage.
+
+    Args:
+        y_val:        label reali del validation set (stringhe W/D/L)
+        y_proba_val:  probabilità del modello sul validation set
+        le:           LabelEncoder fittato su y_train
+        search_range: intervallo da esplorare
+        step:         granularità della ricerca
+
+    Returns:
+        threshold ottimale per la classe D
+    """
+    draw_idx   = list(le.classes_).index("D")
+    thresholds = np.arange(search_range[0], search_range[1], step)
+    best_thresh, best_f1 = 0.33, 0.0
+
+    for t in thresholds:
+        y_pred = _predict_with_draw_threshold(y_proba_val, le.classes_, draw_idx, t)
+        f1_d   = f1_score(y_val, y_pred, labels=["D"], average="macro", zero_division=0)
+        if f1_d > best_f1:
+            best_f1, best_thresh = f1_d, t
+
+    print(f"  Threshold ottimale draw: {best_thresh:.2f}  (F1-D val={best_f1:.4f})")
+    return best_thresh
+
+
+def _predict_with_draw_threshold(
+    y_proba: np.ndarray,
+    classes: np.ndarray,
+    draw_idx: int,
+    threshold: float,
+) -> np.ndarray:
+    """
+    Predice D se P(D) >= threshold, altrimenti argmax standard.
+    """
+    preds = []
+    for row in y_proba:
+        if row[draw_idx] >= threshold:
+            preds.append("D")
+        else:
+            best = int(np.argmax(row))
+            preds.append(classes[best])
+    return np.array(preds)
 
 # ─── TABELLE OUTPUT ──────────────────────────────────────────────────────────
 
@@ -168,6 +228,7 @@ def plot_confusion_matrix(y_test, y_pred) -> None:
 def run_classification_pipeline(
         df: pd.DataFrame,
         run_eda_flag: bool = False,
+        tune_draw_threshold: bool = True,
 ) -> ClassificationResult:
     """
     Pipeline completa XGBoost con split temporale.
@@ -175,6 +236,7 @@ def run_classification_pipeline(
     Args:
         df:           DataFrame con feature già costruite (output di features.py).
         run_eda_flag: non usato, mantenuto per compatibilità firma con logistic.
+        tune_draw_threshold:
 
     Returns:
         ClassificationResult — stesso contratto restituito da logistic_pipeline.
@@ -183,24 +245,35 @@ def run_classification_pipeline(
 
     train_df, test_df = temporal_train_test_split(df, test_ratio=0.2)
 
-    X_train = train_df[NUM_FEATURES + CAT_FEATURES]
-    y_train = train_df["result"]
+    # ── split val dal training (ultimi 15% del train) ─────────────────────
+    val_cutoff = int(len(train_df) * 0.85)
+    fit_df = train_df.iloc[:val_cutoff]
+    val_df = train_df.iloc[val_cutoff:]
+
+    X_fit = fit_df[NUM_FEATURES + CAT_FEATURES]
+    y_fit = fit_df["result"]
+    X_val = val_df[NUM_FEATURES + CAT_FEATURES]
+    y_val = val_df["result"]
     X_test = test_df[NUM_FEATURES + CAT_FEATURES]
     y_test = test_df["result"]
 
-    print(f"  Train: {len(X_train)} righe | Test: {len(X_test)} righe")
-    print(f"  Distribuzione train: {y_train.value_counts().to_dict()}")
-
-    # XGBoost richiede label numeriche — D→0 L→1 W→2 (fit solo su train)
     le = LabelEncoder()
-    y_train_enc = le.fit_transform(y_train)
+    y_fit_enc = le.fit_transform(y_fit)
 
     pipeline = build_model_pipeline()
-    grid = train_model(X_train, y_train_enc, pipeline)
+    grid = train_model(X_fit, y_fit_enc, pipeline)
 
-    y_pred_enc = grid.predict(X_test)
-    y_pred = le.inverse_transform(y_pred_enc.astype(int))
+    draw_idx = list(le.classes_).index("D")
     y_proba = grid.predict_proba(X_test)
+
+    # ── threshold tuning su val, applicato su test ────────────────────────
+    if tune_draw_threshold:
+        y_proba_val = grid.predict_proba(X_val)
+        threshold = find_optimal_draw_threshold(y_val, y_proba_val, le)
+        y_pred = _predict_with_draw_threshold(y_proba, le.classes_, draw_idx, threshold)
+    else:
+        y_pred_enc = grid.predict(X_test)
+        y_pred = le.inverse_transform(y_pred_enc.astype(int))
 
     metrics = _compute_metrics(y_test, y_pred, y_proba, le)
 

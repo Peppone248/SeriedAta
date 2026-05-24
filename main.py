@@ -21,7 +21,7 @@ from pipeline import run_pipeline
 from features import add_match_features, add_new_features, add_rolling_team_form
 from config import (
     REGRESSION_FEATURES, REGRESSION_TARGET,
-    XGBOOST_NUM_FEATURES, CAT_FEATURES,
+    XGBOOST_NUM_FEATURES, CAT_FEATURES, LOGISTIC_NUM_FEATURES
 )
 
 from models.base import RegressionResult
@@ -30,6 +30,7 @@ from models.xgboost_pipeline import run_classification_pipeline as run_xgboost
 from models.lgbm_pipeline import run_classification_pipeline as run_lgbm
 
 from linear_regression_model import run_regression_pipeline
+from feature_selection import run_feature_analysis
 
 from evaluation import (
     print_classification_leaderboard,
@@ -54,6 +55,10 @@ from classification_model_interpretation_xgboost import (
     print_match_explanation,
     plot_match_shap_report,
 )
+
+from backtesting import (compare_models_backtest,
+                         plot_backtest_results,
+                         print_backtest_summary)
 
 from reporting import generate_summary_md
 
@@ -88,7 +93,30 @@ def build_dataset(csv_path: str = "data/raw/matches_seriea.csv"):
     return df, pipeline_outputs
 
 
-# ─── SEZIONE 2 & 3 — CLASSIFICAZIONE ─────────────────────────────────────────
+# ─── SEZIONE 2 — FEATURE ANALYSIS ────────────────────────────────────────────
+
+def run_feature_selection(df: pd.DataFrame, corr_threshold: float = 0.90, mi_threshold: float = 0.01) -> None:
+    """
+    Analisi di ridondanza su tutti e tre i set di feature numeriche.
+    Non modifica config.py — stampa suggerimenti da valutare manualmente.
+
+    I set XGBoost e LightGBM condividono le stesse feature, quindi
+    viene analizzato un solo plot per entrambi.
+    """
+    _section("FEATURE ANALYSIS — CORRELATION & REDUNDANCY")
+
+    run_feature_analysis(
+        df, LOGISTIC_NUM_FEATURES,
+        label="Logistic Regression", corr_threshold=corr_threshold, mi_threshold= mi_threshold
+    )
+
+    # XGBoost e LightGBM usano lo stesso set — un'analisi copre entrambi
+    run_feature_analysis(
+        df, XGBOOST_NUM_FEATURES,
+        label="XGBoost / LightGBM", corr_threshold=corr_threshold, mi_threshold= mi_threshold
+    )
+
+# ─── SEZIONE 3 & 4 — CLASSIFICAZIONE ─────────────────────────────────────────
 
 def run_classifiers(df: pd.DataFrame):
     """
@@ -100,8 +128,10 @@ def run_classifiers(df: pd.DataFrame):
     _print_clf_summary(logistic)
 
     _section("CLASSIFICAZIONE — XGBOOST")
-    xgboost = run_xgboost(df)
+    xgboost = run_xgboost(df, tune_draw_threshold=False)
+    xgboost_tuned = run_xgboost(df, tune_draw_threshold=True)
     _print_clf_summary(xgboost)
+    print_classification_leaderboard([xgboost_tuned, xgboost])
 
     _section("CLASSIFICAZIONE — LIGHTGBM")
     lgbm = run_lgbm(df)
@@ -118,7 +148,7 @@ def _print_clf_summary(r) -> None:
         print(f"  Log loss : {r.log_loss:.4f}")
 
 
-# ─── SEZIONE 4 — REGRESSIONE ─────────────────────────────────────────────────
+# ─── SEZIONE 5 — REGRESSIONE ─────────────────────────────────────────────────
 
 def run_regression(df: pd.DataFrame) -> RegressionResult:
     """
@@ -147,7 +177,7 @@ def run_regression(df: pd.DataFrame) -> RegressionResult:
     )
 
 
-# ─── SEZIONE 5 — CONFRONTO MODELLI ───────────────────────────────────────────
+# ─── SEZIONE 6 — CONFRONTO MODELLI ───────────────────────────────────────────
 
 def compare_models(logistic, xgboost, lgbm, regression) -> None:
     """
@@ -163,7 +193,7 @@ def compare_models(logistic, xgboost, lgbm, regression) -> None:
     print_regression_leaderboard([regression])
 
 
-# ─── SEZIONE 8 — REPORT ──────────────────────────────────────────────────────
+# ─── SEZIONE 7 — REPORT ──────────────────────────────────────────────────────
 
 def generate_report(
         pipeline_outputs: dict,
@@ -204,7 +234,7 @@ def generate_report(
     print(f"  Report salvato in: {report_path}")
 
 
-# ─── SEZIONE 6 — INTERPRETABILITÀ LOGISTIC ───────────────────────────────────
+# ─── SEZIONE 8 — INTERPRETABILITÀ LOGISTIC ───────────────────────────────────
 
 def interpret_logistic(logistic) -> None:
     _section("INTERPRETABILITÀ — LOGISTIC REGRESSION")
@@ -214,7 +244,51 @@ def interpret_logistic(logistic) -> None:
     plot_probability_distribution(logistic.probabilities)
 
 
-# ─── SEZIONE 7 — INTERPRETABILITÀ XGBOOST (SHAP) ─────────────────────────────
+# ─── SEZIONE 9 — BACKTESTING ─────────────────────────────────────────────────
+
+def run_backtesting(df: pd.DataFrame, logistic, xgboost, lgbm) -> None:
+    """
+    Walk-forward backtest stagione per stagione su tutti e tre i modelli.
+    Usa best_params dal training principale per evitare GridSearch
+    su ogni fold — il backtest misura la stabilità, non il tuning.
+    """
+    _section("BACKTESTING — WALK-FORWARD PER STAGIONE")
+
+    model_configs = [
+        {
+            "model_name": "Logistic Regression",
+            "build_pipeline_fn": build_logistic,
+            "train_fn": train_logistic,
+            "num_features": LOGISTIC_NUM_FEATURES,
+            "cat_features": CAT_FEATURES,
+            "needs_label_encoding": False,
+            "best_params": logistic.model.best_params_,
+        },
+        {
+            "model_name": "XGBoost",
+            "build_pipeline_fn": build_xgboost,
+            "train_fn": train_xgboost,
+            "num_features": XGBOOST_NUM_FEATURES,
+            "cat_features": CAT_FEATURES,
+            "needs_label_encoding": True,
+            "best_params": xgboost.model.best_params_,
+        },
+        {
+            "model_name": "LightGBM",
+            "build_pipeline_fn": build_lgbm,
+            "train_fn": train_lgbm,
+            "num_features": LGBM_NUM_FEATURES,
+            "cat_features": CAT_FEATURES,
+            "needs_label_encoding": False,
+            "best_params": lgbm.model.best_params_,
+        },
+    ]
+
+    backtest_results = compare_models_backtest(df, model_configs)
+    print_backtest_summary(backtest_results)
+    plot_backtest_results(backtest_results)
+
+# ─── SEZIONE 10 — INTERPRETABILITÀ XGBOOST (SHAP) ─────────────────────────────
 
 def interpret_xgboost(df: pd.DataFrame, xgboost) -> None:
     """
@@ -263,6 +337,8 @@ def interpret_xgboost(df: pd.DataFrame, xgboost) -> None:
 def main() -> None:
     df, pipeline_outputs = build_dataset()
 
+    run_feature_selection(df)
+
     logistic, xgboost, lgbm = run_classifiers(df)
     regression = run_regression(df)
 
@@ -273,7 +349,7 @@ def main() -> None:
     generate_report(pipeline_outputs, best_clf, regression)
 
     interpret_logistic(logistic)
-    interpret_xgboost(df, xgboost)
+    #interpret_xgboost(df, xgboost)
 
     _section("DONE")
     print("Pipeline completata.")

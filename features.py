@@ -49,31 +49,25 @@ def add_match_features(df: pd.DataFrame) -> pd.DataFrame:
 
     df["last_5_points"] = (
         df.groupby("team")["points"]
-            .rolling(5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
     )
 
     df["last_5_goal_diff"] = (
         df.groupby("team")["goal_diff"]
-            .rolling(5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
     )
 
     df["last_5_xg"] = (
         df.groupby("team")["xg"]
-            .rolling(5, min_periods=1)
-            .mean()
-            .reset_index(0, drop=True)
+            .transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
     )
 
     df["xg_trend"] = df.groupby("team")["xg"].transform(
-        lambda x: x.rolling(5, min_periods=1).mean().diff()
+        lambda x: x.shift(1).rolling(5, min_periods=1).mean().diff()
     )
 
     df["points_trend"] = df.groupby("team")["points"].transform(
-        lambda x: x.rolling(5, min_periods=1).mean().diff()
+        lambda x: x.shift(1).rolling(5, min_periods=1).mean().diff()
     )
 
     # ----- fatigue features ------
@@ -106,12 +100,12 @@ def add_match_features(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Stanchezza da calendario: numero di partite negli ultimi 14 giorni
-    """df["matches_last_14d"] = (
+    df["matches_last_14d"] = (
         df.groupby("team")["date"]
             .transform(lambda x: x.expanding()
                        .apply(lambda dates: ((x.iloc[len(dates) - 1] - dates[:-1])
                                              .dt.days <= 14).sum()))
-    )"""
+    )
 
     return df
 
@@ -131,7 +125,7 @@ def build_team_strength_features(df: pd.DataFrame) -> pd.DataFrame:
 
     team_strength = (
         df.groupby("team", observed=True)
-        .agg(
+            .agg(
             avg_points=("points", "mean"),
             avg_goals_for=("gf", "mean"),
             avg_goals_against=("ga", "mean"),
@@ -139,7 +133,7 @@ def build_team_strength_features(df: pd.DataFrame) -> pd.DataFrame:
             avg_xga=("xga", "mean"),
             win_rate=("win_flag", "mean"),
         )
-        .reset_index()
+            .reset_index()
     )
 
     return team_strength
@@ -267,7 +261,7 @@ def add_new_features(df: pd.DataFrame) -> pd.DataFrame:
     # cambio formazione rispetto alla partita precedente
     df["prev_formation"] = df.groupby("team")["formation"].shift(1)
     df["formation_changed"] = (
-        df["formation"] != df["prev_formation"]
+            df["formation"] != df["prev_formation"]
     ).astype("int8")
     df["formation_changed"] = df["formation_changed"].fillna(0)
 
@@ -281,22 +275,22 @@ def add_rolling_team_form(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
     # rolling features per team
     df["roll_points"] = (
         df.groupby("team")["points"]
-        .transform(lambda x: x.rolling(window, min_periods=1).mean())
+            .transform(lambda x: x.rolling(window, min_periods=1).mean())
     )
 
     df["roll_xg"] = (
         df.groupby("team")["xg"]
-        .transform(lambda x: x.rolling(window, min_periods=1).mean())
+            .transform(lambda x: x.rolling(window, min_periods=1).mean())
     )
 
     df["roll_xga"] = (
         df.groupby("team")["xga"]
-        .transform(lambda x: x.rolling(window, min_periods=1).mean())
+            .transform(lambda x: x.rolling(window, min_periods=1).mean())
     )
 
     df["roll_goal_diff"] = (
         df.groupby("team")["goal_diff"]
-        .transform(lambda x: x.rolling(window, min_periods=1).mean())
+            .transform(lambda x: x.rolling(window, min_periods=1).mean())
     )
 
     return df

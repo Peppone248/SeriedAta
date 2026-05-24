@@ -33,19 +33,63 @@ FIGURES_DIR = BASE_DIR / "reports" / "figures"
 
 RAW_FILE = RAW_DIR / "matches_seriea.csv"
 
+PRE_MATCH_FEATURES = [
+    # relative to home-team
+    "is_home",
+
+    # relative strength computed on previous matches
+    "strength_points_diff",
+    "strength_xg_diff",
+    "strength_xga_diff",
+    "cum_avg_points",
+    "cum_avg_xg",
+    "cum_avg_xga",
+
+    # recent form
+    "last_5_points",
+    "last_5_goal_diff",
+    "last_5_xg",
+    "xg_trend",
+    "points_trend",
+    "weighted_form",
+    "form_consistency",
+
+    # contesto
+    "days_rest",
+    "formation_changed",
+    "h2h_win_rate",
+]
+
 # ─── FEATURE CATEGORIALI (condivise da tutti i modelli) ─────────────────────
 CAT_FEATURES: list[str] = ["team", "opponent", "venue"]
 
 # ─── LOGISTIC REGRESSION ────────────────────────────────────────────────────
 # Usate da LogisticRegression standalone e da model_comparison.py (split equo).
 LOGISTIC_NUM_FEATURES: list[str] = [
-    "xg", "xga", "poss", "sot", "shot_accuracy", "is_home",
-    "strength_points_diff", "strength_xg_diff", "strength_xga_diff",
-    # "finishing_efficiency", "defensive_efficiency",
-    "last_5_points", "last_5_goal_diff", "last_5_xg",
-    "xg_trend", "days_rest", "dist",
-    "cum_avg_points", "cum_avg_xg", "cum_avg_xga",
-    "formation_changed", "h2h_win_rate", "weighted_form", "form_consistency",
+    # relative to home-team
+    "is_home",
+
+    # relative strength computed on previous matches
+    "strength_points_diff",
+    "strength_xg_diff",
+    "strength_xga_diff",
+    "cum_avg_points",
+    "cum_avg_xg",
+    "cum_avg_xga",
+
+    # recent form
+    "last_5_points",
+    "last_5_goal_diff",
+    "last_5_xg",
+    "xg_trend",
+    "points_trend",
+    "weighted_form",
+    "form_consistency",
+
+    # contesto
+    "days_rest",
+    "formation_changed",
+    "h2h_win_rate",
 ]
 
 # ─── XGBOOST (set esteso) ────────────────────────────────────────────────────
@@ -54,24 +98,60 @@ LOGISTIC_NUM_FEATURES: list[str] = [
 #   h2h_win_rate     → win rate storico head-to-head
 #   form_consistency → std punti ultimi 5
 XGBOOST_NUM_FEATURES: list[str] = [
-    "xg", "xga", "poss", "sot", "shot_accuracy", "is_home",
-    "strength_points_diff", "strength_xg_diff", "strength_xga_diff",
-    "last_5_points", "last_5_goal_diff", "last_5_xg",
-    "xg_trend", "days_rest", "dist", "formation_changed",
-    "cum_avg_points", "cum_avg_xg", "cum_avg_xga",
-    "h2h_win_rate", "weighted_form", "form_consistency",
+    # relative to home-team
+    "is_home",
+
+    # relative strength computed on previous matches
+    "strength_points_diff",
+    "strength_xg_diff",
+    "strength_xga_diff",
+    "cum_avg_points",
+    "cum_avg_xg",
+    "cum_avg_xga",
+
+    # recent form
+    "last_5_points",
+    "last_5_goal_diff",
+    "last_5_xg",
+    "xg_trend",
+    "points_trend",
+    "weighted_form",
+    "form_consistency",
+
+    # contesto
+    "days_rest",
+    "formation_changed",
+    "h2h_win_rate",
 ]
 
 # ─── LIGHTGBM ────────────────────────────────────────────────────────────────
 # Stesso set esteso di XGBoost: confronto diretto tra i due boosting models.
 # Definito separatamente per permettere variazioni future indipendenti.
 LGBM_NUM_FEATURES: list[str] = [
-    "xg", "xga", "poss", "sot", "shot_accuracy", "is_home",
-    "strength_points_diff", "strength_xg_diff", "strength_xga_diff",
-    "last_5_points", "last_5_goal_diff", "last_5_xg",
-    "xg_trend", "days_rest", "dist", "formation_changed",
-    "cum_avg_points", "cum_avg_xg", "cum_avg_xga",
-    "h2h_win_rate", "weighted_form", "form_consistency",
+    # relative to home-team
+    "is_home",
+
+    # relative strength computed on previous matches
+    "strength_points_diff",
+    "strength_xg_diff",
+    "strength_xga_diff",
+    "cum_avg_points",
+    "cum_avg_xg",
+    "cum_avg_xga",
+
+    # recent form
+    "last_5_points",
+    "last_5_goal_diff",
+    "last_5_xg",
+    "xg_trend",
+    "points_trend",
+    "weighted_form",
+    "form_consistency",
+
+    # contest
+    "days_rest",
+    "formation_changed",
+    "h2h_win_rate",
 ]
 
 # ─── REGRESSIONE ────────────────────────────────────────────────────────────
