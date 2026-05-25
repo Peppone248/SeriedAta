@@ -20,7 +20,6 @@ senza toccare il resto.
 
 import warnings
 import pandas as pd
-import numpy as np
 
 warnings.filterwarnings(
     "ignore",
@@ -29,7 +28,7 @@ warnings.filterwarnings(
 )
 
 from pipeline import run_pipeline
-from features import add_match_features, add_new_features, add_rolling_team_form
+from features import add_match_features, add_new_features, add_rolling_team_form, add_parity_features
 from config import (
     REGRESSION_FEATURES, REGRESSION_TARGET,
     LOGISTIC_NUM_FEATURES, XGBOOST_NUM_FEATURES, LGBM_NUM_FEATURES,
@@ -47,10 +46,16 @@ from models.xgboost_pipeline import (
     build_model_pipeline as build_xgboost,
     train_model as train_xgboost,
 )
+
 from models.lgbm_pipeline import (
     run_classification_pipeline as run_lgbm,
     build_model_pipeline as build_lgbm,
     train_model as train_lgbm,
+)
+
+from models.cascaded_classification import (
+    run_classification_pipeline as run_cascaded,
+    plot_cascade_probabilities,
 )
 
 from linear_regression_model import run_regression_pipeline
@@ -116,8 +121,9 @@ def build_dataset(csv_path: str = "data/raw/matches_seriea.csv"):
     df = add_match_features(df)
     df = add_new_features(df)
     df = add_rolling_team_form(df, window=5)
+    df = add_parity_features(df)
 
-    pipeline_outputs["raw_df"] = df  # aggiorna con le feature aggiunte
+    pipeline_outputs["raw_df"] = df
 
     print(f"  Dataset pronto: {df.shape[0]} righe, {df.shape[1]} colonne")
     return df, pipeline_outputs
@@ -155,7 +161,7 @@ def run_feature_selection(
 
 def run_classifiers(df: pd.DataFrame):
     """
-    Allena i tre classificatori e stampa un riepilogo immediato.
+    Allena i quattro classificatori e stampa un riepilogo immediato.
     Tutti restituiscono ClassificationResult → confrontabili direttamente.
 
     XGBoost viene eseguito due volte (senza e con threshold tuning) per
@@ -175,8 +181,15 @@ def run_classifiers(df: pd.DataFrame):
     lgbm = run_lgbm(df)
     _print_clf_summary(lgbm)
 
-    # restituisce xgboost_tuned come versione canonico per i passi successivi
-    return logistic, xgboost_tuned, lgbm
+    _section("5b — CLASSIFICAZIONE: CASCADED (W|DL → D|L)")
+    cascaded = run_cascaded(df)
+    _print_clf_summary(cascaded)
+
+    # mostra le distribuzioni di probabilità del modello a cascata
+    plot_cascade_probabilities(cascaded.probabilities, cascaded.y_test)
+
+    # restituisce xgboost_tuned come versione canonica per i passi successivi
+    return logistic, xgboost_tuned, lgbm, cascaded
 
 
 def _print_clf_summary(r) -> None:
@@ -222,16 +235,16 @@ def run_regression(df: pd.DataFrame) -> RegressionResult:
 
 # ─── SEZIONE 7 — CONFRONTO MODELLI ───────────────────────────────────────────
 
-def compare_models(logistic, xgboost, lgbm, regression) -> None:
+def compare_models(logistic, xgboost, lgbm, cascaded, regression) -> None:
     """
     Leaderboard testuale + grafici comparativi su ClassificationResult list.
     Aggiungere un modello = aggiungerlo alla lista, nient'altro.
     """
     _section("7 — CONFRONTO MODELLI")
 
-    print_classification_leaderboard([logistic, xgboost, lgbm])
-    plot_classification_comparison([logistic, xgboost, lgbm])
-    plot_confusion_matrices([logistic, xgboost, lgbm])
+    print_classification_leaderboard([logistic, xgboost, lgbm, cascaded])
+    plot_classification_comparison([logistic, xgboost, lgbm, cascaded])
+    plot_confusion_matrices([logistic, xgboost, lgbm, cascaded])
     print_regression_leaderboard([regression])
 
 
@@ -386,20 +399,20 @@ def main() -> None:
     # ── 2. analisi feature (commenta per saltare) ─────────────────────────
     run_feature_selection(df)
 
-    # ── 3-5. classificazione ──────────────────────────────────────────────
-    logistic, xgboost, lgbm = run_classifiers(df)
+    # ── 3-5b. classificazione ─────────────────────────────────────────────
+    logistic, xgboost, lgbm, cascaded = run_classifiers(df)
 
     # ── 6. regressione ────────────────────────────────────────────────────
     regression = run_regression(df)
 
     # ── 7. confronto ──────────────────────────────────────────────────────
-    compare_models(logistic, xgboost, lgbm, regression)
+    compare_models(logistic, xgboost, lgbm, cascaded, regression)
 
     # ── 8. backtesting ────────────────────────────────────────────────────
     run_backtesting(df, logistic, xgboost, lgbm)
 
     # ── 9. report (modello migliore per f1_macro) ─────────────────────────
-    best_clf = max([logistic, xgboost, lgbm], key=lambda r: r.f1_macro)
+    best_clf = max([logistic, xgboost, lgbm, cascaded], key=lambda r: r.f1_macro)
     generate_report(pipeline_outputs, best_clf, regression)
 
     # ── 10-11. interpretabilità ───────────────────────────────────────────

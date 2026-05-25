@@ -58,6 +58,14 @@ PRE_MATCH_FEATURES = [
     "days_rest",
     "formation_changed",
     "h2h_win_rate",
+
+    # nuove feature di parità
+    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
+    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
+    "form_parity",  # |weighted_form - opp_weighted_form|
+    "h2h_draw_rate",  # storico draw % tra questi due team
+    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
+    "season_phase",  # inizio / metà / fine stagione
 ]
 
 # ─── FEATURE CATEGORIALI (condivise da tutti i modelli) ─────────────────────
@@ -90,6 +98,14 @@ LOGISTIC_NUM_FEATURES: list[str] = [
     "days_rest",
     "formation_changed",
     "h2h_win_rate",
+
+    # nuove feature di parità
+    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
+    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
+    "form_parity",  # |weighted_form - opp_weighted_form|
+    "h2h_draw_rate",  # storico draw % tra questi due team
+    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
+    "season_phase",  # inizio / metà / fine stagione
 ]
 
 # ─── XGBOOST (set esteso) ────────────────────────────────────────────────────
@@ -122,6 +138,14 @@ XGBOOST_NUM_FEATURES: list[str] = [
     "days_rest",
     "formation_changed",
     "h2h_win_rate",
+
+    # nuove feature di parità
+    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
+    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
+    "form_parity",  # |weighted_form - opp_weighted_form|
+    "h2h_draw_rate",  # storico draw % tra questi due team
+    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
+    "season_phase",  # inizio / metà / fine stagione
 ]
 
 # ─── LIGHTGBM ────────────────────────────────────────────────────────────────
@@ -152,6 +176,14 @@ LGBM_NUM_FEATURES: list[str] = [
     "days_rest",
     "formation_changed",
     "h2h_win_rate",
+
+    # nuove feature di parità
+    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
+    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
+    "form_parity",  # |weighted_form - opp_weighted_form|
+    "h2h_draw_rate",  # storico draw % tra questi due team
+    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
+    "season_phase",  # inizio / metà / fine stagione
 ]
 
 # ─── REGRESSIONE ────────────────────────────────────────────────────────────

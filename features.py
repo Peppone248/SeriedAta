@@ -294,3 +294,77 @@ def add_rolling_team_form(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
     )
 
     return df
+
+def add_parity_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Feature di equilibrio tra le due squadre.
+    Valori bassi → partita equilibrata → pareggio più probabile.
+
+    Richiedono che build_cumulative_team_strength() sia già stato eseguito
+    (usa cum_avg_points, opp_cum_avg_points, ecc.).
+    """
+    df = df.copy()
+
+    # ── parità di forza ───────────────────────────────────────────────────
+    # distanza assoluta nella forza cumulativa — 0 = squadre identiche
+    df["strength_parity"] = (
+        df["cum_avg_points"] - df["opp_cum_avg_points"]
+    ).abs()
+
+    df["xg_parity"] = (
+        df["cum_avg_xg"] - df["opp_cum_avg_xg"]
+    ).abs()
+
+    # ── parità di forma recente ───────────────────────────────────────────
+    # richiede weighted_form dell'avversario — merge su (opponent, date)
+    form_opp = (
+        df[["team", "date", "weighted_form"]]
+        .rename(columns={"team": "opponent", "weighted_form": "opp_weighted_form"})
+    )
+    df = df.merge(form_opp, on=["opponent", "date"], how="left")
+
+    df["form_parity"] = (
+        df["weighted_form"] - df["opp_weighted_form"]
+    ).abs()
+
+    # ── storico pareggi head-to-head ─────────────────────────────────────
+    # quante volte queste due squadre hanno pareggiato in passato
+    df_sorted = df.sort_values(["team", "opponent", "date"])
+    df["h2h_draw_rate"] = (
+        df_sorted
+        .groupby(["team", "opponent"])["draw_flag"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+    )
+
+    # ── entrambe le squadre difensive ────────────────────────────────────
+    # bassa xG attesa per entrambe → più probabile 0-0 o 1-0
+    xga_opp = (
+        df[["team", "date", "cum_avg_xga"]]
+        .rename(columns={"team": "opponent", "cum_avg_xga": "opp_cum_avg_xga_def"})
+    )
+    df = df.merge(xga_opp, on=["opponent", "date"], how="left")
+
+    df["both_defensive"] = (
+        df["cum_avg_xga"] + df["opp_cum_avg_xga_def"]
+    )  # più basso = entrambe difendono bene → partita bloccata
+
+    # ── fase stagionale ───────────────────────────────────────────────────
+    # i pareggi aumentano nella fase centrale della stagione
+    if "matchweek" in df.columns:
+        df["season_phase"] = pd.cut(
+            df["matchweek"],
+            bins    = [0, 10, 28, 38],
+            labels  = [0, 1, 2],    # inizio / metà / fine
+            ordered = False,
+        ).astype("float32")
+
+    # fillna conservativo: parità neutra = 0 per le diff, mediana per il resto
+    parity_cols = [
+        "strength_parity", "xg_parity", "form_parity",
+        "h2h_draw_rate", "both_defensive",
+    ]
+    for col in parity_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(df[col].median())
+
+    return df

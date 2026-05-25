@@ -146,45 +146,63 @@ def _compute_metrics(y_test, y_pred, y_proba, le: LabelEncoder) -> dict:
 
 
 def find_optimal_draw_threshold(
-    y_val: pd.Series,
-    y_proba_val: np.ndarray,
-    le: LabelEncoder,
-    search_range: tuple = (0.20, 0.45),
-    step: float = 0.01,
+        y_val: pd.Series,
+        y_proba_val: np.ndarray,
+        le: LabelEncoder,
+        search_range: tuple = (0.25, 0.45),  # range più conservativo
+        step: float = 0.01,
+        min_f1_win: float = 0.40,  # floor su W
+        min_f1_loss: float = 0.40,  # floor su L
 ) -> float:
     """
-    Cerca il draw_threshold che massimizza F1-D su un validation set.
-    Non toccare mai il test set per questa ricerca — sarebbe leakage.
+    Cerca il threshold che massimizza F1-macro sul validation set,
+    con il vincolo che F1-W >= min_f1_win e F1-L >= min_f1_loss.
+    Evita che alzare il recall sui draw distrugga le altre classi.
 
-    Args:
-        y_val:        label reali del validation set (stringhe W/D/L)
-        y_proba_val:  probabilità del modello sul validation set
-        le:           LabelEncoder fittato su y_train
-        search_range: intervallo da esplorare
-        step:         granularità della ricerca
-
-    Returns:
-        threshold ottimale per la classe D
+    Se nessun threshold rispetta i vincoli, ritorna 0.33 (argmax standard).
     """
-    draw_idx   = list(le.classes_).index("D")
+    draw_idx = list(le.classes_).index("D")
     thresholds = np.arange(search_range[0], search_range[1], step)
-    best_thresh, best_f1 = 0.33, 0.0
+
+    best_thresh = 0.33
+    best_f1macro = 0.0
+
+    results = []
 
     for t in thresholds:
         y_pred = _predict_with_draw_threshold(y_proba_val, le.classes_, draw_idx, t)
-        f1_d   = f1_score(y_val, y_pred, labels=["D"], average="macro", zero_division=0)
-        if f1_d > best_f1:
-            best_f1, best_thresh = f1_d, t
 
-    print(f"  Threshold ottimale draw: {best_thresh:.2f}  (F1-D val={best_f1:.4f})")
+        f1_w = f1_score(y_val, y_pred, labels=["W"], average="macro", zero_division=0)
+        f1_l = f1_score(y_val, y_pred, labels=["L"], average="macro", zero_division=0)
+        f1_d = f1_score(y_val, y_pred, labels=["D"], average="macro", zero_division=0)
+        f1_macro = f1_score(y_val, y_pred, average="macro", zero_division=0)
+
+        results.append((t, f1_macro, f1_l, f1_d, f1_w))
+
+        # accetta solo se non distrugge W e L
+        if f1_w < min_f1_win or f1_l < min_f1_loss:
+            continue
+
+        if f1_macro > best_f1macro:
+            best_f1macro = f1_macro
+            best_thresh = t
+
+    # stampa tabella di ricerca per diagnostica
+    print(f"\n  {'threshold':>10}  {'f1_macro':>8}  {'f1_L':>6}  {'f1_D':>6}  {'f1_W':>6}  {'valid':>6}")
+    for t, fm, fl, fd, fw in results:
+        valid = "✓" if fw >= min_f1_win and fl >= min_f1_loss else "✗"
+        marker = " ←" if abs(t - best_thresh) < 0.005 else ""
+        print(f"  {t:>10.2f}  {fm:>8.4f}  {fl:>6.3f}  {fd:>6.3f}  {fw:>6.3f}  {valid:>6}{marker}")
+
+    print(f"\n  Threshold scelto: {best_thresh:.2f}  (F1-macro val={best_f1macro:.4f})")
     return best_thresh
 
 
 def _predict_with_draw_threshold(
-    y_proba: np.ndarray,
-    classes: np.ndarray,
-    draw_idx: int,
-    threshold: float,
+        y_proba: np.ndarray,
+        classes: np.ndarray,
+        draw_idx: int,
+        threshold: float,
 ) -> np.ndarray:
     """
     Predice D se P(D) >= threshold, altrimenti argmax standard.
