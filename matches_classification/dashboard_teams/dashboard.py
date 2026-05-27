@@ -54,7 +54,7 @@ def _find(filename):
     candidates = [
         PROCESSED_DIR / filename,
         Path(filename),
-        Path("..") / "data" / "processed" / filename,
+        Path("../..") / "data" / "processed" / filename,
     ]
     return next((p for p in candidates if p.exists()), None)
 

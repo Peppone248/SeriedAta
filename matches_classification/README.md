@@ -111,7 +111,7 @@ python main.py
 To run only the multi-model comparison (LR, RF, XGBoost, LightGBM on identical split):
 
 ```python
-from model_comparison import run_model_comparison, plot_comparison_results
+from matches_classification.model_comparison import run_model_comparison, plot_comparison_results
 
 results = run_model_comparison(df)
 plot_comparison_results(results["leaderboard"])
@@ -120,8 +120,8 @@ plot_comparison_results(results["leaderboard"])
 To run a single pipeline in isolation:
 
 ```python
-from models.xgboost_pipeline import run_classification_pipeline
-from evaluation import print_classification_leaderboard
+from matches_classification.models.xgboost_pipeline import run_classification_pipeline
+from matches_classification.evaluation import print_classification_leaderboard
 
 result = run_classification_pipeline(df)
 print_classification_leaderboard([result])

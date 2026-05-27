@@ -12,7 +12,6 @@ Cambiamenti rispetto alla versione precedente:
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -27,8 +26,8 @@ from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, train_test_sp
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from config import LOGISTIC_NUM_FEATURES, CAT_FEATURES
-from models.base import ClassificationResult
+from matches_classification.config import LOGISTIC_NUM_FEATURES, CAT_FEATURES
+from matches_classification.models.base import ClassificationResult
 
 # alias locale — usato da model_comparison.py che importa NUM_FEATURES da qui
 NUM_FEATURES = LOGISTIC_NUM_FEATURES

@@ -38,8 +38,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
 
-from config import XGBOOST_NUM_FEATURES, CAT_FEATURES
-from models.base import ClassificationResult
+from matches_classification.config import XGBOOST_NUM_FEATURES, CAT_FEATURES
+from matches_classification.models.base import ClassificationResult
 
 NUM_FEATURES = XGBOOST_NUM_FEATURES
 
@@ -74,25 +74,25 @@ def _build_binary_pipeline(scale_pos_weight: float = 1.0) -> Pipeline:
     (a differenza di multi:softprob dove era ignorato).
     """
     model = XGBClassifier(
-        objective          = "binary:logistic",
-        eval_metric        = "logloss",
-        scale_pos_weight   = scale_pos_weight,
-        random_state       = 42,
-        n_jobs             = -1,
+        objective="binary:logistic",
+        eval_metric="logloss",
+        scale_pos_weight=scale_pos_weight,
+        random_state=42,
+        n_jobs=-1,
     )
     return Pipeline(steps=[
         ("preprocessor", build_preprocessor()),
-        ("model",        model),
+        ("model", model),
     ])
 
 
 # ─── TRAINING ────────────────────────────────────────────────────────────────
 
 def _train_binary(
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    scale_pos_weight: float,
-    label: str,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        scale_pos_weight: float,
+        label: str,
 ) -> GridSearchCV:
     """
     Grid search per un classificatore binario.
@@ -100,10 +100,10 @@ def _train_binary(
     al grid di scegliere se usarlo o no.
     """
     param_grid = {
-        "model__n_estimators":     [100, 300],
-        "model__max_depth":        [3, 5],
-        "model__learning_rate":    [0.05, 0.1],
-        "model__subsample":        [0.8, 1.0],
+        "model__n_estimators": [100, 300],
+        "model__max_depth": [3, 5],
+        "model__learning_rate": [0.05, 0.1],
+        "model__subsample": [0.8, 1.0],
         "model__colsample_bytree": [0.8, 1.0],
         "model__scale_pos_weight": [1.0, round(scale_pos_weight, 2)],
     }
@@ -113,10 +113,10 @@ def _train_binary(
     grid = GridSearchCV(
         pipeline,
         param_grid,
-        cv      = TimeSeriesSplit(n_splits=5),
-        scoring = "f1",          # f1 binario sulla classe positiva
-        n_jobs  = -1,
-        verbose = 1,
+        cv=TimeSeriesSplit(n_splits=5),
+        scoring="f1",  # f1 binario sulla classe positiva
+        n_jobs=-1,
+        verbose=1,
     )
     grid.fit(X_train, y_train)
 
@@ -128,8 +128,8 @@ def _train_binary(
 # ─── PROBABILITY ASSEMBLY ────────────────────────────────────────────────────
 
 def _assemble_probabilities(
-    p_win: np.ndarray,
-    p_draw_given_notwin: np.ndarray,
+        p_win: np.ndarray,
+        p_draw_given_notwin: np.ndarray,
 ) -> np.ndarray:
     """
     Assembla le probabilità finali da due classificatori binari.
@@ -144,19 +144,19 @@ def _assemble_probabilities(
     per coerenza con xgboost_pipeline e _compute_metrics.
     """
     p_notwin = 1.0 - p_win
-    p_draw   = p_notwin * p_draw_given_notwin
-    p_loss   = p_notwin * (1.0 - p_draw_given_notwin)
+    p_draw = p_notwin * p_draw_given_notwin
+    p_loss = p_notwin * (1.0 - p_draw_given_notwin)
 
     # stack in ordine [D, L, W] — alfabetico come le.classes_
     return np.column_stack([p_draw, p_loss, p_win])
 
 
 def _predict_from_proba(
-    proba: np.ndarray,
-    class_order: list[str] = ["D", "L", "W"],
+        proba: np.ndarray,
+        class_order: list[str] = ["D", "L", "W"],
 ) -> np.ndarray:
     """Predice la classe con probabilità massima."""
-    idx    = np.argmax(proba, axis=1)
+    idx = np.argmax(proba, axis=1)
     labels = np.array(class_order)
     return labels[idx]
 
@@ -164,28 +164,28 @@ def _predict_from_proba(
 # ─── EVALUATION ──────────────────────────────────────────────────────────────
 
 def _compute_metrics(
-    y_test: pd.Series,
-    y_pred: np.ndarray,
-    y_proba: np.ndarray,
+        y_test: pd.Series,
+        y_pred: np.ndarray,
+        y_proba: np.ndarray,
 ) -> dict:
     """
     Stessa struttura di xgboost_pipeline._compute_metrics().
     y_proba ha colonne [D, L, W] — log_loss usa labels coerenti.
     """
-    classes   = ["L", "D", "W"]
+    classes = ["L", "D", "W"]
     f1_values = f1_score(
         y_test, y_pred, average=None, labels=classes, zero_division=0
     )
     ll = log_loss(y_test, y_proba, labels=["D", "L", "W"])
 
     return {
-        "accuracy":      float(accuracy_score(y_test, y_pred)),
-        "f1_macro":      float(f1_score(y_test, y_pred, average="macro",
-                                        zero_division=0)),
-        "f1_per_class":  dict(zip(classes, f1_values.tolist())),
-        "log_loss":      float(ll),
-        "report":        classification_report(y_test, y_pred, output_dict=True),
-        "predictions":   y_pred,
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "f1_macro": float(f1_score(y_test, y_pred, average="macro",
+                                   zero_division=0)),
+        "f1_per_class": dict(zip(classes, f1_values.tolist())),
+        "log_loss": float(ll),
+        "report": classification_report(y_test, y_pred, output_dict=True),
+        "predictions": y_pred,
         "probabilities": y_proba,
     }
 
@@ -194,18 +194,18 @@ def _compute_metrics(
 
 def _build_prediction_table(X_test, y_test, y_pred) -> pd.DataFrame:
     out = X_test.copy()
-    out["actual"]    = y_test.values
+    out["actual"] = y_test.values
     out["predicted"] = y_pred
-    out["correct"]   = out["actual"] == out["predicted"]
+    out["correct"] = out["actual"] == out["predicted"]
     return out
 
 
 def _build_probability_table(X_test, y_test, y_proba) -> pd.DataFrame:
     out = X_test.copy()
-    out["actual"]     = y_test.values
-    out["P_D"]        = y_proba[:, 0]
-    out["P_L"]        = y_proba[:, 1]
-    out["P_W"]        = y_proba[:, 2]
+    out["actual"] = y_test.values
+    out["P_D"] = y_proba[:, 0]
+    out["P_L"] = y_proba[:, 1]
+    out["P_W"] = y_proba[:, 2]
     out["confidence"] = y_proba.max(axis=1)
     return out
 
@@ -218,9 +218,9 @@ def plot_cascade_probabilities(y_proba: np.ndarray, y_test: pd.Series) -> None:
     Permette di verificare che il modello separi bene le distribuzioni.
     """
     df_plot = pd.DataFrame({
-        "P_W":   y_proba[:, 2],
-        "P_D":   y_proba[:, 0],
-        "P_L":   y_proba[:, 1],
+        "P_W": y_proba[:, 2],
+        "P_D": y_proba[:, 0],
+        "P_L": y_proba[:, 1],
         "label": y_test.values,
     })
 
@@ -260,8 +260,8 @@ def plot_confusion_matrix(y_test, y_pred) -> None:
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
 def run_classification_pipeline(
-    df: pd.DataFrame,
-    run_eda_flag: bool = False,
+        df: pd.DataFrame,
+        run_eda_flag: bool = False,
 ) -> ClassificationResult:
     """
     Pipeline a cascata: W vs non-W → D vs L.
@@ -279,8 +279,8 @@ def run_classification_pipeline(
 
     X_train = train_df[all_features]
     y_train = train_df["result"]
-    X_test  = test_df[all_features]
-    y_test  = test_df["result"]
+    X_test = test_df[all_features]
+    y_test = test_df["result"]
 
     print(f"  Train: {len(X_train)} righe | Test: {len(X_test)} righe")
     print(f"  Distribuzione train: {y_train.value_counts().to_dict()}")
@@ -290,9 +290,9 @@ def run_classification_pipeline(
 
     y_train_1 = (y_train == "W").astype(int)
 
-    n_W    = y_train_1.sum()
+    n_W = y_train_1.sum()
     n_nonW = len(y_train_1) - n_W
-    spw_1  = n_nonW / n_W         # scala i non-W per bilanciare
+    spw_1 = n_nonW / n_W  # scala i non-W per bilanciare
 
     clf_1 = _train_binary(X_train, y_train_1, spw_1, label="W vs non-W")
     p_win = clf_1.predict_proba(X_test)[:, 1]
@@ -300,21 +300,21 @@ def run_classification_pipeline(
     # ── step 2: D vs L (solo sui non-W del training) ─────────────────────
     print("\n  ── Step 2: D vs L (su campioni non-W) ──")
 
-    mask_nonW  = y_train != "W"
-    X_train_2  = X_train[mask_nonW]
-    y_train_2  = (y_train[mask_nonW] == "D").astype(int)
+    mask_nonW = y_train != "W"
+    X_train_2 = X_train[mask_nonW]
+    y_train_2 = (y_train[mask_nonW] == "D").astype(int)
 
-    n_D   = y_train_2.sum()
-    n_L   = len(y_train_2) - n_D
-    spw_2 = n_L / n_D             # scala D (minoritaria tra non-W)
+    n_D = y_train_2.sum()
+    n_L = len(y_train_2) - n_D
+    spw_2 = n_L / n_D  # scala D (minoritaria tra non-W)
 
     # clf_2 applicato a TUTTI i test sample per ottenere P(D|non-W)
-    clf_2              = _train_binary(X_train_2, y_train_2, spw_2, label="D vs L")
+    clf_2 = _train_binary(X_train_2, y_train_2, spw_2, label="D vs L")
     p_draw_given_notwin = clf_2.predict_proba(X_test)[:, 1]
 
     # ── assemblaggio probabilità finali ───────────────────────────────────
     y_proba = _assemble_probabilities(p_win, p_draw_given_notwin)
-    y_pred  = _predict_from_proba(y_proba, class_order=["D", "L", "W"])
+    y_pred = _predict_from_proba(y_proba, class_order=["D", "L", "W"])
 
     metrics = _compute_metrics(y_test, y_pred, y_proba)
 
@@ -324,18 +324,18 @@ def run_classification_pipeline(
     print(f"  F1 [L={fpc['L']:.3f}  D={fpc['D']:.3f}  W={fpc['W']:.3f}]")
 
     return ClassificationResult(
-        model_name        = "Cascaded (W|DL → D|L)",
-        accuracy          = metrics["accuracy"],
-        f1_macro          = metrics["f1_macro"],
-        f1_per_class      = metrics["f1_per_class"],
-        log_loss          = metrics["log_loss"],
-        report            = metrics["report"],
-        predictions       = metrics["predictions"],
-        probabilities     = metrics["probabilities"],
-        y_test            = y_test,
-        X_test            = X_test,
-        prediction_table  = _build_prediction_table(X_test, y_test, y_pred),
-        probability_table = _build_probability_table(X_test, y_test, y_proba),
-        model             = {"clf_1": clf_1, "clf_2": clf_2},  # entrambi accessibili
-        label_encoder     = None,
+        model_name="Cascaded (W|DL → D|L)",
+        accuracy=metrics["accuracy"],
+        f1_macro=metrics["f1_macro"],
+        f1_per_class=metrics["f1_per_class"],
+        log_loss=metrics["log_loss"],
+        report=metrics["report"],
+        predictions=metrics["predictions"],
+        probabilities=metrics["probabilities"],
+        y_test=y_test,
+        X_test=X_test,
+        prediction_table=_build_prediction_table(X_test, y_test, y_pred),
+        probability_table=_build_probability_table(X_test, y_test, y_proba),
+        model={"clf_1": clf_1, "clf_2": clf_2},  # entrambi accessibili
+        label_encoder=None,
     )

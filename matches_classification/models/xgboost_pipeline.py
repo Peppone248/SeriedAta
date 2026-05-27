@@ -33,8 +33,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
 
-from config import XGBOOST_NUM_FEATURES, CAT_FEATURES
-from models.base import ClassificationResult
+from matches_classification.config import XGBOOST_NUM_FEATURES, CAT_FEATURES
+from matches_classification.models.base import ClassificationResult
 
 NUM_FEATURES = XGBOOST_NUM_FEATURES
 

@@ -1,10 +1,9 @@
 """
-evaluation.py — confronto unificato di modelli.
+evaluation.py — unified model comparison utilities.
 
-Funziona su ClassificationResult e RegressionResult da models/base.py.
-Poiché tutti i modelli restituiscono lo stesso contratto, non ci sono
-if/else né chiavi hardcoded: si itera direttamente sulla lista di risultati.
-
+Operates on ClassificationResult and RegressionResult from models/base.py.
+Because all models return the same contract, there are no if/else branches
+or model-specific key accesses — the module iterates directly over the list.
 """
 
 from __future__ import annotations
@@ -22,10 +21,10 @@ from models.base import ClassificationResult, RegressionResult
 
 def classification_leaderboard(results: list[ClassificationResult]) -> pd.DataFrame:
     """
-    Tabella comparativa ordinata per f1_macro.
+    Comparison table sorted by f1_macro.
 
-    Ogni riga corrisponde a un ClassificationResult.
-    Nessun accesso diretto a dict interni — tutto via attributi del dataclass.
+    Each row corresponds to one ClassificationResult.
+    Accesses only dataclass attributes — no internal dict keys.
     """
     rows = [
         {
@@ -52,21 +51,21 @@ def print_classification_leaderboard(results: list[ClassificationResult]) -> Non
     print(lb.to_string())
     print("═" * 70)
 
-    best         = lb.iloc[0]
-    best_draw    = lb.loc[lb["f1_D"].idxmax()]
-    print(f"\n  Miglior f1_macro : {best['model']} ({best['f1_macro']:.4f})")
-    print(f"  Miglior F1 draw  : {best_draw['model']} ({best_draw['f1_D']:.4f})")
-    print("  (i draw sono la classe più difficile — monitorarla separatamente)")
+    best      = lb.iloc[0]
+    best_draw = lb.loc[lb["f1_D"].idxmax()]
+    print(f"\n  Best f1_macro : {best['model']} ({best['f1_macro']:.4f})")
+    print(f"  Best F1 draw  : {best_draw['model']} ({best_draw['f1_D']:.4f})")
+    print("  (draws are the hardest class — monitor separately)")
 
 
 # ─── CLASSIFICATION — PLOTS ──────────────────────────────────────────────────
 
 def plot_classification_comparison(results: list[ClassificationResult]) -> None:
     """
-    3 pannelli affiancati:
-      1. f1_macro + accuracy per modello
-      2. f1 per classe (L / D / W)
-      3. log_loss (pannello vuoto se nessun modello lo calcola)
+    3 side-by-side panels:
+      1. f1_macro + accuracy per model
+      2. f1 per class (L / D / W)
+      3. log_loss (empty panel if no model computes it)
     """
     lb = classification_leaderboard(results).reset_index(drop=True)
 
@@ -83,8 +82,8 @@ def plot_classification_comparison(results: list[ClassificationResult]) -> None:
     axes[0].set_title("F1 macro vs Accuracy")
     axes[0].legend()
 
-    # ── 2. f1 per classe ─────────────────────────────────────────────────
-    bar_w  = 0.25
+    # ── 2. f1 per class ───────────────────────────────────────────────────
+    bar_w       = 0.25
     class_colors = {"f1_L": "#d84a30", "f1_D": "#d48a2b", "f1_W": "#5ab27a"}
     for i, (col, color) in enumerate(class_colors.items()):
         axes[1].bar(x + (i - 1) * bar_w, lb[col], bar_w,
@@ -93,27 +92,27 @@ def plot_classification_comparison(results: list[ClassificationResult]) -> None:
     axes[1].set_xticklabels(lb["model"], rotation=15, ha="right")
     axes[1].set_ylim(0, 1)
     axes[1].axhline(0.33, color="gray", linestyle="--", linewidth=0.8)
-    axes[1].set_title("F1 per classe (L / D / W)")
-    axes[1].legend(title="Classe")
+    axes[1].set_title("F1 per class (L / D / W)")
+    axes[1].legend(title="Class")
 
     # ── 3. log_loss ───────────────────────────────────────────────────────
     ll_data = lb.dropna(subset=["log_loss"])
     if not ll_data.empty:
         axes[2].bar(ll_data["model"], ll_data["log_loss"], alpha=0.85)
-        axes[2].set_title("Log Loss (↓ meglio)")
+        axes[2].set_title("Log Loss (↓ better)")
         axes[2].tick_params(axis="x", rotation=15)
     else:
-        axes[2].text(0.5, 0.5, "log_loss non disponibile",
+        axes[2].text(0.5, 0.5, "log_loss not available",
                      ha="center", va="center", transform=axes[2].transAxes)
         axes[2].set_title("Log Loss")
 
-    plt.suptitle("Model Comparison — Classificazione", fontsize=13)
+    plt.suptitle("Model Comparison — Classification", fontsize=13)
     plt.tight_layout()
     plt.show()
 
 
 def plot_confusion_matrices(results: list[ClassificationResult]) -> None:
-    """Confusion matrix side-by-side per ogni ClassificationResult."""
+    """Confusion matrix side-by-side for every ClassificationResult."""
     n     = len(results)
     ncols = min(n, 3)
     nrows = (n + ncols - 1) // ncols
@@ -135,12 +134,12 @@ def plot_confusion_matrices(results: list[ClassificationResult]) -> None:
     for j in range(i + 1, len(axes)):
         axes[j].set_visible(False)
 
-    plt.suptitle("Confusion matrices — tutti i modelli", fontsize=13)
+    plt.suptitle("Confusion matrices — all models", fontsize=13)
     plt.tight_layout()
     plt.show()
 
 
-# ─── REGRESSION — LEADERBOARD ────────────────────────────────────────────────
+# ─── REGRESSION — LEADERBOARD ─────────────────────────────────────────────────
 
 def regression_leaderboard(results: list[RegressionResult]) -> pd.DataFrame:
     rows = [

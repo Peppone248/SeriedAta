@@ -11,7 +11,6 @@ Differenze rispetto a xgboost_pipeline:
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -26,8 +25,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from lightgbm import LGBMClassifier
 
-from config import LGBM_NUM_FEATURES, CAT_FEATURES
-from models.base import ClassificationResult
+from matches_classification.config import LGBM_NUM_FEATURES, CAT_FEATURES
+from matches_classification.models.base import ClassificationResult
 
 NUM_FEATURES = LGBM_NUM_FEATURES
 
