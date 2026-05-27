@@ -20,6 +20,7 @@ senza toccare il resto.
 
 import warnings
 import pandas as pd
+import numpy as np
 
 warnings.filterwarnings(
     "ignore",
@@ -28,7 +29,9 @@ warnings.filterwarnings(
 )
 
 from pipeline import run_pipeline
-from features import add_match_features, add_new_features, add_rolling_team_form, add_parity_features
+from features import add_match_features, add_new_features, add_rolling_team_form, add_standings_features, \
+    add_parity_features, \
+    add_opponent_adjusted_features, print_standings_sample
 from config import (
     REGRESSION_FEATURES, REGRESSION_TARGET,
     LOGISTIC_NUM_FEATURES, XGBOOST_NUM_FEATURES, LGBM_NUM_FEATURES,
@@ -46,20 +49,18 @@ from models.xgboost_pipeline import (
     build_model_pipeline as build_xgboost,
     train_model as train_xgboost,
 )
-
 from models.lgbm_pipeline import (
     run_classification_pipeline as run_lgbm,
     build_model_pipeline as build_lgbm,
     train_model as train_lgbm,
 )
-
 from models.cascaded_classification import (
     run_classification_pipeline as run_cascaded,
     plot_cascade_probabilities,
 )
 
 from linear_regression_model import run_regression_pipeline
-from feature_selection import run_feature_analysis
+from feature_selection import run_feature_analysis, run_permutation_audit, audit_leakage
 
 from evaluation import (
     print_classification_leaderboard,
@@ -121,9 +122,14 @@ def build_dataset(csv_path: str = "data/raw/matches_seriea.csv"):
     df = add_match_features(df)
     df = add_new_features(df)
     df = add_rolling_team_form(df, window=5)
+    df = add_standings_features(df)  # ← classifica + pressure features
     df = add_parity_features(df)
+    df = add_opponent_adjusted_features(df)
 
     pipeline_outputs["raw_df"] = df
+
+    # verifica classifica per una giornata campione
+    print_standings_sample(df, matchweek=10)
 
     print(f"  Dataset pronto: {df.shape[0]} righe, {df.shape[1]} colonne")
     return df, pipeline_outputs
@@ -137,23 +143,30 @@ def run_feature_selection(
         mi_threshold: float = 0.01,
 ) -> None:
     """
-    Analisi di ridondanza (Pearson + Mutual Information) sui set numerici.
-    Non modifica config.py — stampa suggerimenti da valutare manualmente.
-    XGBoost e LightGBM condividono lo stesso set → un solo plot per entrambi.
+    1a. Leakage audit — correlazione di ogni feature con il target.
+        Segnala feature sospette prima del training.
+    1b. Ridondanza — Pearson + Mutual Information.
+        Suggerisce feature da rimuovere per set, senza modificare config.py.
     """
-    _section("2 — FEATURE ANALYSIS: CORRELATION & REDUNDANCY")
+    _section("2 — FEATURE ANALYSIS: LEAKAGE AUDIT + REDUNDANCY")
 
+    # ── leakage audit ─────────────────────────────────────────────────────
+    print("\n  === LEAKAGE AUDIT — XGBoost/LightGBM features ===")
+    audit_leakage(df, XGBOOST_NUM_FEATURES, warn_threshold=0.25, danger_threshold=0.45)
+
+    print("\n  === LEAKAGE AUDIT — Logistic features ===")
+    audit_leakage(df, LOGISTIC_NUM_FEATURES, warn_threshold=0.25, danger_threshold=0.45)
+
+    # ── ridondanza ────────────────────────────────────────────────────────
     run_feature_analysis(
         df, LOGISTIC_NUM_FEATURES,
         label="Logistic Regression",
-        corr_threshold=corr_threshold,
-        mi_threshold=mi_threshold,
+        threshold=0.90
     )
     run_feature_analysis(
         df, XGBOOST_NUM_FEATURES,
         label="XGBoost / LightGBM",
-        corr_threshold=corr_threshold,
-        mi_threshold=mi_threshold,
+        threshold=0.90
     )
 
 
@@ -407,6 +420,22 @@ def main() -> None:
 
     # ── 7. confronto ──────────────────────────────────────────────────────
     compare_models(logistic, xgboost, lgbm, cascaded, regression)
+
+    # ── 7b. permutation importance audit (post-training) ─────────────────
+    _section("7b — PERMUTATION IMPORTANCE AUDIT")
+    for result, name in [
+        (xgboost, "XGBoost"),
+        (lgbm, "LightGBM"),
+    ]:
+        run_permutation_audit(
+            grid=result.model,
+            X_test=result.X_test,
+            y_test=result.y_test,
+            threshold=0.001,
+            n_repeats=15,
+            model_name=name,
+            label_encoder=result.label_encoder,  # None per LightGBM, LabelEncoder per XGBoost
+        )
 
     # ── 8. backtesting ────────────────────────────────────────────────────
     run_backtesting(df, logistic, xgboost, lgbm)

@@ -33,158 +33,38 @@ FIGURES_DIR = BASE_DIR / "reports" / "figures"
 
 RAW_FILE = RAW_DIR / "matches_seriea.csv"
 
-PRE_MATCH_FEATURES = [
-    # relative to home-team
-    "is_home",
-
-    # relative strength computed on previous matches
-    "strength_points_diff",
-    "strength_xg_diff",
-    "strength_xga_diff",
-    "cum_avg_points",
-    "cum_avg_xg",
-    "cum_avg_xga",
-
-    # recent form
-    "last_5_points",
-    "last_5_goal_diff",
-    "last_5_xg",
-    "xg_trend",
-    "points_trend",
-    "weighted_form",
-    "form_consistency",
-
-    # contesto
-    "days_rest",
-    "formation_changed",
-    "h2h_win_rate",
-
-    # nuove feature di parità
-    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
-    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
-    "form_parity",  # |weighted_form - opp_weighted_form|
-    "h2h_draw_rate",  # storico draw % tra questi due team
-    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
-    "season_phase",  # inizio / metà / fine stagione
-]
-
 # ─── FEATURE CATEGORIALI (condivise da tutti i modelli) ─────────────────────
 CAT_FEATURES: list[str] = ["team", "opponent", "venue"]
 
 # ─── LOGISTIC REGRESSION ────────────────────────────────────────────────────
 # Usate da LogisticRegression standalone e da model_comparison.py (split equo).
 LOGISTIC_NUM_FEATURES: list[str] = [
-    # relative to home-team
-    "is_home",
-
-    # relative strength computed on previous matches
-    "strength_points_diff",
-    "strength_xg_diff",
-    "strength_xga_diff",
-    "cum_avg_points",
-    "cum_avg_xg",
-    "cum_avg_xga",
-
-    # recent form
-    "last_5_points",
-    "last_5_goal_diff",
-    "last_5_xg",
-    "xg_trend",
-    "points_trend",
-    "weighted_form",
-    "form_consistency",
-
-    # contesto
-    "days_rest",
-    "formation_changed",
-    "h2h_win_rate",
-
-    # nuove feature di parità
-    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
-    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
-    "form_parity",  # |weighted_form - opp_weighted_form|
-    "h2h_draw_rate",  # storico draw % tra questi due team
-    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
-    "season_phase",  # inizio / metà / fine stagione
+    "opp_league_position", "is_home",
+    "xg_parity", "position_diff",
+    "strength_xg_diff", "points_trend",
+    "league_position", "formation_changed",
+    "weighted_form",   # borderline ma con CI che tocca lo zero
 ]
 
 # ─── XGBOOST (set esteso) ────────────────────────────────────────────────────
-# Aggiunge feature non disponibili nel set logistic:
-#   dist             → distanza media del tiro
-#   h2h_win_rate     → win rate storico head-to-head
-#   form_consistency → std punti ultimi 5
 XGBOOST_NUM_FEATURES: list[str] = [
-    # relative to home-team
-    "is_home",
-
-    # relative strength computed on previous matches
-    "strength_points_diff",
-    "strength_xg_diff",
-    "strength_xga_diff",
-    "cum_avg_points",
-    "cum_avg_xg",
-    "cum_avg_xga",
-
-    # recent form
-    "last_5_points",
-    "last_5_goal_diff",
-    "last_5_xg",
-    "xg_trend",
-    "points_trend",
-    "weighted_form",
-    "form_consistency",
-
-    # contesto
-    "days_rest",
-    "formation_changed",
-    "h2h_win_rate",
-
-    # nuove feature di parità
-    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
-    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
-    "form_parity",  # |weighted_form - opp_weighted_form|
-    "h2h_draw_rate",  # storico draw % tra questi due team
-    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
-    "season_phase",  # inizio / metà / fine stagione
-]
+        "opp_league_position", "is_home",
+        "xg_parity", "position_diff",
+        "strength_xg_diff", "points_trend",
+        "league_position", "formation_changed",
+        "weighted_form",  # borderline ma con CI che tocca lo zero
+    ]
 
 # ─── LIGHTGBM ────────────────────────────────────────────────────────────────
 # Stesso set esteso di XGBoost: confronto diretto tra i due boosting models.
 # Definito separatamente per permettere variazioni future indipendenti.
 LGBM_NUM_FEATURES: list[str] = [
-    # relative to home-team
-    "is_home",
-
-    # relative strength computed on previous matches
-    "strength_points_diff",
-    "strength_xg_diff",
-    "strength_xga_diff",
-    "cum_avg_points",
-    "cum_avg_xg",
-    "cum_avg_xga",
-
-    # recent form
-    "last_5_points",
-    "last_5_goal_diff",
-    "last_5_xg",
-    "xg_trend",
-    "points_trend",
-    "weighted_form",
-    "form_consistency",
-
-    # contest
-    "days_rest",
-    "formation_changed",
-    "h2h_win_rate",
-
-    # nuove feature di parità
-    "strength_parity",  # |cum_pts_team - cum_pts_opp|  → 0 = equilibrio
-    "xg_parity",  # |cum_xg_team  - cum_xg_opp|
-    "form_parity",  # |weighted_form - opp_weighted_form|
-    "h2h_draw_rate",  # storico draw % tra questi due team
-    "both_defensive",  # xga_team + xga_opp  → partita bloccata?
-    "season_phase",  # inizio / metà / fine stagione
-]
+        "opp_league_position", "is_home",
+        "xg_parity", "position_diff",
+        "strength_xg_diff", "points_trend",
+        "league_position", "formation_changed",
+        "weighted_form",  # borderline ma con CI che tocca lo zero
+    ]
 
 # ─── REGRESSIONE ────────────────────────────────────────────────────────────
 REGRESSION_FEATURES: list[str] = [

@@ -295,6 +295,7 @@ def add_rolling_team_form(df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
 
     return df
 
+
 def add_parity_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Feature di equilibrio tra le due squadre.
@@ -367,4 +368,288 @@ def add_parity_features(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].fillna(df[col].median())
 
+    return df
+
+
+# ─── STANDINGS CORE ──────────────────────────────────────────────────────────
+
+def _build_cumulative_standings(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcola i punti cumulativi di ogni squadra prima di ogni partita.
+
+    Usa groupby(season, team) + shift(1).expanding().sum() per garantire
+    che la partita corrente non venga mai inclusa nel calcolo.
+
+    Aggiunge:
+        cum_points_before  → punti totali prima di questa partita
+        cum_gd_before      → differenza reti cumulativa (tiebreaker)
+        cum_gf_before      → gol segnati cumulativi (tiebreaker secondario)
+    """
+    df = df.copy()
+    df = df.sort_values(["season", "team", "matchweek", "date"])
+
+    for col, src in [
+        ("cum_points_before", "points"),
+        ("cum_gd_before", "goal_diff"),
+        ("cum_gf_before", "gf"),
+    ]:
+        df[col] = (
+            df.groupby(["season", "team"])[src]
+                .transform(lambda x: x.shift(1).expanding().sum())
+                .fillna(0)
+        )
+
+    return df
+
+
+def _assign_league_positions(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Assegna la posizione in classifica prima di ogni partita.
+    Tiebreaker: punti → differenza reti → gol segnati (regola Serie A).
+
+    Aggiunge:
+        league_position     → 1 (primo) a 20 (ultimo)
+        opp_league_position → posizione dell'avversario
+    """
+    df = df.copy()
+
+    # rank all'interno di ogni (season, matchweek) — più punti = posizione più bassa
+    df["league_position"] = (
+        df.groupby(["season", "matchweek"])
+            .apply(lambda g: (
+            g[["cum_points_before", "cum_gd_before", "cum_gf_before"]]
+                .apply(tuple, axis=1)
+                .rank(ascending=False, method="min")
+                .astype(int)
+        ))
+            .reset_index(level=[0, 1], drop=True)
+    )
+
+    # posizione dell'avversario — merge su (season, matchweek, team=opponent)
+    pos_lookup = (
+        df[["season", "matchweek", "team", "league_position"]]
+            .rename(columns={"team": "opponent", "league_position": "opp_league_position"})
+    )
+    df = df.merge(pos_lookup, on=["season", "matchweek", "opponent"], how="left")
+
+    return df
+
+
+# ─── PRESSURE FEATURES ───────────────────────────────────────────────────────
+
+def _add_pressure_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Feature di pressione contestuale derivate dalla classifica pre-match.
+
+    Champions League: top 4
+    Europa League:    top 6 (per completezza)
+    Retrocessione:    ultimi 3 (posizioni 18-20)
+
+    Aggiunge:
+        points_gap_top4         → punti da guadagnare per entrare in top 4
+                                  (0 se già in top 4)
+        points_gap_relegation   → punti di vantaggio sulla zona retrocessione
+                                  (negativo = in zona retrocessione)
+        is_top_half             → 1 se posizione <= 10
+        is_relegation_zone      → 1 se posizione >= 18
+        position_diff           → league_position - opp_league_position
+                                  (negativo = team meglio posizionato)
+        season_progress         → matchweek / 38 ∈ [0, 1]
+                                  (quanto è avanzata la stagione)
+    """
+    df = df.copy()
+
+    def _compute_gaps(group):
+        pts = group["cum_points_before"]
+        mw = group.name  # (season, matchweek)
+
+        sorted_pts = pts.sort_values(ascending=False).values
+
+        # punti del 4° — se meno di 4 squadre usa l'ultimo
+        top4_pts = sorted_pts[3] if len(sorted_pts) > 3 else sorted_pts[-1]
+        # punti del 18° — soglia retrocessione
+        relegation_pts = sorted_pts[17] if len(sorted_pts) > 17 else sorted_pts[0]
+
+        group = group.copy()
+        group["points_gap_top4"] = (top4_pts - pts).clip(lower=0)
+        group["points_gap_relegation"] = pts - relegation_pts
+        return group
+
+    df = (
+        df.groupby(["season", "matchweek"], group_keys=False)
+            .apply(_compute_gaps)
+    )
+
+    df["is_top_half"] = (df["league_position"] <= 10).astype("int8")
+    df["is_relegation_zone"] = (df["league_position"] >= 18).astype("int8")
+
+    # differenza di posizione tra le due squadre
+    # negativo = team meglio classificato dell'avversario
+    df["position_diff"] = df["league_position"] - df["opp_league_position"]
+
+    # avanzamento stagionale — cattura pressione crescente a fine stagione
+    df["season_progress"] = (df["matchweek"] / 38.0).clip(upper=1.0)
+
+    # fillna conservativo: inizio stagione → posizione neutra, gap = 0
+    pressure_cols = [
+        "league_position", "opp_league_position",
+        "points_gap_top4", "points_gap_relegation",
+        "is_top_half", "is_relegation_zone",
+        "position_diff", "season_progress",
+    ]
+    for col in pressure_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(df[col].median())
+
+    return df
+
+
+# ─── ENTRY POINT ─────────────────────────────────────────────────────────────
+
+def add_standings_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pipeline completa: standings → posizioni → pressure features.
+
+    Richiede che il DataFrame abbia già:
+        - colonna "matchweek" (estratta da "round" in add_match_features)
+        - colonne "points", "goal_diff", "gf" (da add_match_features)
+        - colonne "season", "team", "opponent", "date"
+
+    Returns:
+        DataFrame con le nuove colonne aggiunte.
+    """
+    required = ["matchweek", "points", "goal_diff", "gf",
+                "season", "team", "opponent", "date"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Colonne mancanti per add_standings_features(): {missing}\n"
+            f"Assicurati che add_match_features() sia stato chiamato prima."
+        )
+
+    df = _build_cumulative_standings(df)
+    df = _assign_league_positions(df)
+    df = _add_pressure_features(df)
+
+    print(f"  Standings features aggiunte: "
+          f"league_position, opp_league_position, points_gap_top4, "
+          f"points_gap_relegation, position_diff, season_progress, "
+          f"is_top_half, is_relegation_zone")
+
+    return df
+
+
+# ─── DIAGNOSTICA ─────────────────────────────────────────────────────────────
+
+def print_standings_sample(df: pd.DataFrame, season=None, matchweek=10) -> None:
+    """
+    Stampa la classifica ricostruita per una giornata specifica.
+    Utile per verificare che i valori siano corretti.
+    """
+    if season is None:
+        season = df["season"].max()
+
+    subset = (
+        df[(df["season"] == season) & (df["matchweek"] == matchweek)]
+        [["team", "league_position", "cum_points_before",
+          "cum_gd_before", "points_gap_top4", "points_gap_relegation"]]
+            .drop_duplicates("team")
+            .sort_values("league_position")
+    )
+
+    print(f"\n  Classifica ricostruita — stagione {season}, "
+          f"prima della giornata {matchweek}:")
+    print(subset.to_string(index=False))
+
+
+# ─── OPPONENT-ADJUSTED FEATURES ──────────────────────────────────────────────
+
+def add_opponent_adjusted_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Feature di forma aggiustate per la qualità dell'avversario.
+
+    Divide le partite storiche in due categorie basandosi su
+    opp_league_position (calcolata da add_standings_features):
+        strong → avversario nella metà alta (opp_league_position ≤ 10)
+        weak   → avversario nella metà bassa (opp_league_position > 10)
+
+    Per ogni categoria calcola medie cumulative con shift(1) per
+    garantire che la partita corrente non venga inclusa (no leakage).
+
+    Richiede: opp_league_position, points, xg (da add_standings_features
+              e add_match_features).
+
+    Nuove colonne:
+        form_vs_strong   → media punti nelle partite storiche vs top-half
+        form_vs_weak     → media punti nelle partite storiche vs bottom-half
+        xg_vs_strong     → media xG vs top-half
+        xg_vs_weak       → media xG vs bottom-half
+        big_game_delta   → form_vs_strong - form_vs_weak
+                           positivo = performa meglio vs squadre forti
+                           negativo = squadra da trasferta facile
+    """
+    required = ["opp_league_position", "points", "xg", "team", "date"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Colonne mancanti per add_opponent_adjusted_features(): {missing}\n"
+            f"Chiama add_standings_features() prima di questa funzione."
+        )
+
+    df = df.copy()
+    df = df.sort_values(["team", "date"])
+
+    def _expanding_conditional_mean(
+            values: pd.Series,
+            mask: pd.Series,
+    ) -> pd.Series:
+        """
+        Expanding mean di `values` solo dove `mask` è True.
+        Entrambi i vettori devono essere già shiftati (shift(1) applicato
+        esternamente nel gruppo) per garantire no leakage.
+
+        Implementazione efficiente con cumsum:
+            mean(t) = cumsum(values * mask)[t] / cumsum(mask)[t]
+        """
+        weighted_cum = (values * mask).expanding().sum()
+        count_cum = mask.expanding().sum()
+        return weighted_cum / count_cum.replace(0, np.nan)
+
+    def _compute_group(group: pd.DataFrame) -> pd.DataFrame:
+        # shift(1): esclude la partita corrente
+        pts = group["points"].shift(1)
+        xg = group["xg"].shift(1)
+        opp_pos = group["opp_league_position"].shift(1)
+
+        # mask float per moltiplicazione diretta
+        strong_mask = (opp_pos <= 10).astype(float)
+        weak_mask = (opp_pos > 10).astype(float)
+
+        return pd.DataFrame({
+            "form_vs_strong": _expanding_conditional_mean(pts, strong_mask),
+            "form_vs_weak": _expanding_conditional_mean(pts, weak_mask),
+            "xg_vs_strong": _expanding_conditional_mean(xg, strong_mask),
+            "xg_vs_weak": _expanding_conditional_mean(xg, weak_mask),
+        }, index=group.index)
+
+    adj = (
+        df.groupby("team", group_keys=False)
+            .apply(_compute_group)
+    )
+
+    df = pd.concat([df, adj], axis=1)
+
+    # feature derivata: delta di performance vs qualità avversario
+    df["big_game_delta"] = df["form_vs_strong"] - df["form_vs_weak"]
+
+    # fillna: prime partite senza storico → mediana (valore neutro)
+    new_cols = [
+        "form_vs_strong", "form_vs_weak",
+        "xg_vs_strong", "xg_vs_weak",
+        "big_game_delta",
+    ]
+    for col in new_cols:
+        df[col] = df[col].fillna(df[col].median())
+
+    print(f"  Opponent-adjusted features aggiunte: {', '.join(new_cols)}")
     return df
