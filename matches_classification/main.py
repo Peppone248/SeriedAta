@@ -22,7 +22,6 @@ without touching the rest.
 
 import warnings
 import pandas as pd
-import numpy as np
 
 warnings.filterwarnings(
     "ignore",
@@ -30,8 +29,8 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from pipeline import run_pipeline
-from features import add_match_features, add_new_features, add_rolling_team_form, add_parity_features, add_standings_features, add_opponent_adjusted_features, print_standings_sample
+from team_trend.pipeline import run_pipeline
+from features import add_match_features, add_new_features, add_rolling_team_form, add_standings_features, add_opponent_adjusted_features, print_standings_sample
 
 from config import (
     REGRESSION_FEATURES, REGRESSION_TARGET,

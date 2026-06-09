@@ -26,11 +26,9 @@ import logging
 import pandas as pd
 
 from config import (
-    SERIE_A_SEASONS, NUM_FEATURES, CAT_FEATURES,
-    TARGET_COL, PREDICTION_HORIZON,
-    GOLD_DIR,
+    SERIE_A_SEASONS, NUM_FEATURES, TARGET_COL, PREDICTION_HORIZON,
 )
-from pipeline import run_pipeline
+from team_trend.pipeline import run_pipeline
 
 logging.basicConfig(
     level   = logging.INFO,

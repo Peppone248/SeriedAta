@@ -20,17 +20,17 @@ from pathlib import Path
 import pandas as pd
 
 from config import SERIE_A_SEASONS, BRONZE_DIR, SILVER_DIR, GOLD_DIR
-from scrapers.schedule_scraper import ScheduleScraper
-from scrapers.match_scraper import MatchScraper
-from etl.bronze.parse_match import (
+from team_trend.scrapers.schedule_scraper import ScheduleScraper
+from team_trend.scrapers.match_scraper import MatchScraper
+from parse_match import (
     parse_summary, parse_keeper, parse_shots,
     parse_passing, parse_defense, parse_possession, parse_misc,
 )
-from etl.silver.clean_players import (
+from clean_players import (
     clean_summary, clean_keeper, clean_shots,
     clean_passing, clean_defense, clean_possession, clean_misc,
 )
-from etl.gold.squad_features import aggregate_squad_per_match, build_squad_features
+from squad_features import aggregate_squad_per_match, build_squad_features
 
 logging.basicConfig(
     level   = logging.INFO,

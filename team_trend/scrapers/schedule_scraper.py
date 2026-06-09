@@ -17,7 +17,7 @@ import re
 
 import pandas as pd
 
-from scrapers.base_scraper import FBrefScraper
+from base_scraper import FBrefScraper
 
 logger = logging.getLogger(__name__)
 
