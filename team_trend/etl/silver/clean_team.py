@@ -1,231 +1,237 @@
 """
-etl/silver/clean_players.py — Silver layer for player-match tables.
+etl/silver/clean_team.py — Silver layer for team-match tables.
 
-Two responsibilities:
-  1. Clean the raw player rows (dtypes, name normalisation)
-  2. Aggregate player-level rows UP to one row per (team, game)
+Silver contract:
+  - Read Bronze parquet (faithful raw strings)
+  - Enforce correct dtypes (GF/GA -> int, percentages -> float)
+  - Normalise names (team, opponent, venue)
+  - Rename columns to clean, consistent snake_case
+  - Merge the three team-match tables into ONE row per (team, game)
+  - schedule is authoritative for shared descriptive columns;
+    shooting and keeper contribute only their distinctive stat columns
+  - No feature engineering (no rolling, no shift) — that is Gold's job
 
-The aggregation is the key value-add of the player data: it produces
-squad-level signals that team-match data cannot give us —
-  - squad rotation (how many players used, how concentrated minutes are)
-  - aggregate defensive workload (tackles won, interceptions summed)
-  - discipline (cards, fouls summed)
-  - attacking volume from players (shots, shots on target summed)
-
-Why aggregate in Silver and not Gold?
-  The aggregation here is a deterministic roll-UP within a single match
-  (sum/count over players in the same game). It uses only the current
-  match's rows, so it is still "one row per (team, game)" — the same grain
-  as team_match. Gold will do the temporal roll-FORWARD (shift + rolling
-  across matchweeks), which is the leakage-sensitive part.
-
-Output: data/silver/{season}/player_match_agg.parquet
+Output: data/silver/{season}/team_match.parquet
 """
 
 from __future__ import annotations
 
 import logging
-import unicodedata
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# join key for team-match tables
 JOIN_KEYS = ["team", "game"]
 
+# descriptive columns owned by schedule (shooting/keeper copies are dropped)
+SCHEDULE_RENAME = {
+    "team":          "team",
+    "game":          "game",
+    "season":        "season",
+    "date":          "date",
+    "round":         "round",
+    "venue":         "venue",
+    "result":        "result",
+    "GF":            "goals_for",
+    "GA":            "goals_against",
+    "opponent":      "opponent",
+    "Poss":          "possession",
+    "Attendance":    "attendance",
+    "Captain":       "captain",
+    "Formation":     "formation",
+    "Opp Formation": "opp_formation",
+    "Referee":       "referee",
+    "match_report":  "match_report",
+}
 
-# ─── name normalisation ────────────────────────────────────────────────────────
+SHOOTING_RENAME = {
+    "Standard_Gls":    "shooting_goals",
+    "Standard_Sh":     "shots",
+    "Standard_SoT":    "shots_on_target",
+    "Standard_SoT%":   "shots_on_target_pct",
+    "Standard_G/Sh":   "goals_per_shot",
+    "Standard_G/SoT":  "goals_per_shot_on_target",
+    "Standard_PK":     "penalties_made",
+    "Standard_PKatt":  "penalties_attempted",
+}
 
-def _strip_accents(name) -> str:
-    """'Müller' -> 'Muller'. Used so player keys join across tables."""
-    if not isinstance(name, str):
-        return name
-    decomposed = unicodedata.normalize("NFD", name.strip())
-    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+KEEPER_RENAME = {
+    "Performance_SoTA":     "shots_on_target_against",
+    "Performance_GA":       "keeper_goals_against",
+    "Performance_Saves":    "saves",
+    "Performance_Save%":    "save_pct",
+    "Performance_CS":       "clean_sheet",
+    "Penalty Kicks_PKatt":  "pk_against_attempted",
+    "Penalty Kicks_PKA":    "pk_against_allowed",
+    "Penalty Kicks_PKsv":   "pk_saved",
+    "Penalty Kicks_PKm":    "pk_missed_by_opponent",
+}
 
+# columns that should be integers after cleaning
+INT_COLS = [
+    "goals_for", "goals_against", "possession", "attendance",
+    "shooting_goals", "shots", "shots_on_target",
+    "penalties_made", "penalties_attempted",
+    "shots_on_target_against", "keeper_goals_against", "saves",
+    "clean_sheet", "pk_against_attempted", "pk_against_allowed",
+    "pk_saved", "pk_missed_by_opponent",
+]
+
+FLOAT_COLS = [
+    "shots_on_target_pct", "goals_per_shot",
+    "goals_per_shot_on_target", "save_pct",
+]
+
+
+# ─── helpers ──────────────────────────────────────────────────────────────────
 
 def _normalise_team(name) -> str:
+    """Consistent team naming: strip + title case."""
     return str(name).strip().title() if pd.notna(name) else name
 
 
-# ─── cleaning (row-level) ──────────────────────────────────────────────────────
-
-def clean_player_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Clean raw player_summary rows.
-      - normalise team and player names
-      - ensure stat columns are numeric (Bronze stored some as strings)
-      - drop rows with no player name (malformed)
-    """
+def _enforce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Cast int/float columns, coercing invalid values to NaN."""
     df = df.copy()
-
-    df["team"]   = df["team"].apply(_normalise_team)
-    df["player"] = df["player"].apply(_strip_accents)
-
-    df = df[df["player"].notna() & (df["player"].astype(str).str.len() > 0)]
-
-    stat_cols = [c for c in df.columns if c.startswith("Performance_")]
-    for col in stat_cols + ["min"]:
+    for col in INT_COLS:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("Int64")
-
-    return df.reset_index(drop=True)
-
-
-def clean_player_keepers(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean raw player_keepers rows."""
-    df = df.copy()
-
-    df["team"]   = df["team"].apply(_normalise_team)
-    df["player"] = df["player"].apply(_strip_accents)
-    df = df[df["player"].notna() & (df["player"].astype(str).str.len() > 0)]
-
-    stat_cols = [c for c in df.columns if c.startswith("Shot Stopping_")]
-    for col in stat_cols + ["min"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    for col in FLOAT_COLS:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Float64")
+    return df
 
-    return df.reset_index(drop=True)
 
-
-# ─── aggregation (player -> squad) ─────────────────────────────────────────────
-
-def aggregate_summary_to_squad(df: pd.DataFrame) -> pd.DataFrame:
+def _select_and_rename(
+    df:         pd.DataFrame,
+    rename_map: dict[str, str],
+    keep_keys:  bool = False,
+) -> pd.DataFrame:
     """
-    Roll player_summary up to one row per (team, game).
-
-    Produces squad-level signals not available from team-match data:
-        players_used        → count of players who appeared
-        starters_used       → count with >= 60 minutes (proxy for starters)
-        minutes_std         → spread of minutes (rotation concentration)
-        squad_age_mean      → mean age of players used (needs numeric age)
-        sum_*               → summed attacking & defensive contributions
+    Keep only the columns in rename_map (plus join keys if requested),
+    then rename them. Drops everything else (e.g. duplicated descriptors).
     """
-    df = df.copy()
-
-    # numeric age from "27-322" (years-days) -> 27.88
-    if "age" in df.columns:
-        age_parts = df["age"].astype(str).str.extract(r"(\d+)-(\d+)")
-        df["age_numeric"] = (
-            pd.to_numeric(age_parts[0], errors="coerce")
-            + pd.to_numeric(age_parts[1], errors="coerce") / 365.0
-        )
-
-    grouped = df.groupby(JOIN_KEYS, observed=True)
-
-    agg = grouped.agg(
-        players_used      = ("player",              "nunique"),
-        squad_minutes     = ("min",                 "sum"),
-        minutes_std       = ("min",                 "std"),
-        squad_age_mean    = ("age_numeric",         "mean"),
-        sum_goals         = ("Performance_Gls",     "sum"),
-        sum_assists       = ("Performance_Ast",     "sum"),
-        sum_shots         = ("Performance_Sh",      "sum"),
-        sum_shots_on_tgt  = ("Performance_SoT",     "sum"),
-        sum_yellow_cards  = ("Performance_CrdY",    "sum"),
-        sum_red_cards     = ("Performance_CrdR",    "sum"),
-        sum_fouls         = ("Performance_Fls",     "sum"),
-        sum_fouls_drawn   = ("Performance_Fld",     "sum"),
-        sum_tackles_won   = ("Performance_TklW",    "sum"),
-        sum_interceptions = ("Performance_Int",     "sum"),
-    ).reset_index()
-
-    # starters proxy: count of players with >= 60 minutes, computed separately
-    starters = (
-        df[df["min"] >= 60]
-        .groupby(JOIN_KEYS, observed=True)["player"]
-        .nunique()
-        .reset_index(name="starters_used")
-    )
-    agg = agg.merge(starters, on=JOIN_KEYS, how="left")
-
-    return agg
+    cols = list(rename_map.keys())
+    if keep_keys:
+        cols = JOIN_KEYS + [c for c in cols if c not in JOIN_KEYS]
+    cols = [c for c in cols if c in df.columns]
+    return df[cols].rename(columns=rename_map)
 
 
-def aggregate_keepers_to_squad(df: pd.DataFrame) -> pd.DataFrame:
+# ─── main ──────────────────────────────────────────────────────────────────────
+
+def clean_team_match(
+    bronze_dir: str,
+    season:     str,
+) -> pd.DataFrame:
     """
-    Roll player_keepers up to one row per (team, game).
+    Merge and clean the three team-match Bronze tables into one Silver table.
 
-    A team usually has one keeper per match; if two appear (substitution),
-    we sum saves/GA and keep the primary keeper's save% via weighted mean.
-    """
-    df = df.copy()
-    grouped = df.groupby(JOIN_KEYS, observed=True)
+    Args:
+        bronze_dir: Bronze root (e.g. "data/bronze")
+        season:     e.g. "2024-2025"
 
-    agg = grouped.agg(
-        keeper_saves      = ("Shot Stopping_Saves", "sum"),
-        keeper_goals_against = ("Shot Stopping_GA",  "sum"),
-        keeper_sota       = ("Shot Stopping_SoTA",  "sum"),
-        keepers_used      = ("player",              "nunique"),
-    ).reset_index()
-
-    # save% recomputed from totals (more robust than averaging per-keeper %)
-    agg["keeper_save_pct"] = np.where(
-        agg["keeper_sota"] > 0,
-        (agg["keeper_saves"] / agg["keeper_sota"] * 100).round(1),
-        np.nan,
-    )
-
-    return agg
-
-
-# ─── orchestrator ──────────────────────────────────────────────────────────────
-
-def clean_player_match(bronze_dir: str, season: str) -> pd.DataFrame:
-    """
-    Full Silver player pipeline:
-        load Bronze -> clean rows -> aggregate to squad -> merge summary+keepers
-
-    Returns one row per (team, game) with squad-level player-derived signals.
+    Returns:
+        One row per (team, game) with cleaned, typed, renamed columns.
     """
     season_path = Path(bronze_dir) / season
 
-    raw_summary = pd.read_parquet(season_path / "player_summary.parquet")
-    raw_keepers = pd.read_parquet(season_path / "player_keepers.parquet")
+    sched = pd.read_parquet(season_path / "team_schedule.parquet")
+    shoot = pd.read_parquet(season_path / "team_shooting.parquet")
+    keep  = pd.read_parquet(season_path / "team_keeper.parquet")
 
-    logger.info("Loaded Bronze player tables: summary=%s keepers=%s",
-                raw_summary.shape, raw_keepers.shape)
+    logger.info("Loaded Bronze team tables: schedule=%s shooting=%s keeper=%s",
+                sched.shape, shoot.shape, keep.shape)
 
-    summary_clean = clean_player_summary(raw_summary)
-    keepers_clean = clean_player_keepers(raw_keepers)
+    # schedule: authoritative for descriptive columns
+    sched_clean = _select_and_rename(sched, SCHEDULE_RENAME)
 
-    summary_agg = aggregate_summary_to_squad(summary_clean)
-    keepers_agg = aggregate_keepers_to_squad(keepers_clean)
+    # shooting/keeper: only distinctive stat columns + join keys
+    shoot_clean = _select_and_rename(shoot, SHOOTING_RENAME, keep_keys=True)
+    keep_clean  = _select_and_rename(keep,  KEEPER_RENAME,   keep_keys=True)
 
-    merged = summary_agg.merge(keepers_agg, on=JOIN_KEYS, how="left")
+    # merge on (team, game)
+    merged = (
+        sched_clean
+        .merge(shoot_clean, on=JOIN_KEYS, how="left")
+        .merge(keep_clean,  on=JOIN_KEYS, how="left")
+    )
 
-    merged = merged.sort_values(["team", "game"]).reset_index(drop=True)
+    # normalise names
+    merged["team"]     = merged["team"].apply(_normalise_team)
+    merged["opponent"] = merged["opponent"].apply(_normalise_team)
 
-    logger.info("Silver player_match_agg: %s, %d teams",
+    # enforce dtypes
+    merged = _enforce_dtypes(merged)
+
+    # derive points from result (W=3, D=1, L=0)
+    result_to_points = {"W": 3, "D": 1, "L": 0}
+    merged["points"] = merged["result"].map(result_to_points).astype("Int64")
+
+    # derive goal difference
+    merged["goal_diff"] = merged["goals_for"] - merged["goals_against"]
+
+    # extract numeric matchweek from "Matchweek 1" -> 1
+    # refinement of existing data (not feature engineering): the value is
+    # already in the row, we just parse it into a usable integer type
+    merged["matchweek"] = (
+        merged["round"]
+        .str.extract(r"(\d+)", expand=False)
+        .astype("Int64")
+    )
+
+    # sort chronologically per team
+    merged = merged.sort_values(["team", "date"]).reset_index(drop=True)
+
+    logger.info("Silver team_match: %s, %d teams",
                 merged.shape, merged["team"].nunique())
 
+    # sanity checks
     _validate(merged)
+
     return merged
 
 
 def _validate(df: pd.DataFrame) -> None:
-    """Loud validation for the aggregated player table."""
-    # players_used should be plausible (11 starters + subs, ~13-20)
-    odd = df[~df["players_used"].between(11, 25)]
+    """Loud validation: fail fast if the Silver output is malformed."""
+    # each team should have 38 matches in a full Serie A season
+    counts = df.groupby("team").size()
+    odd    = counts[counts != 38]
     if not odd.empty:
-        logger.warning("Rows with implausible players_used: %d", len(odd))
+        logger.warning("Teams without exactly 38 matches:\n%s", odd.to_string())
 
-    # squad_minutes should be ~990-1050 (11 players * 90 + stoppage subs)
-    if "squad_minutes" in df.columns:
-        odd_min = df[~df["squad_minutes"].between(900, 1200)]
-        if not odd_min.empty:
-            logger.warning("Rows with implausible squad_minutes: %d", len(odd_min))
+    # points must be in {0,1,3}
+    bad_points = df[~df["points"].isin([0, 1, 3])]
+    if not bad_points.empty:
+        logger.warning("Rows with invalid points: %d", len(bad_points))
 
-    if df[JOIN_KEYS].isna().any().any():
-        logger.error("NULL values in join keys!")
+    # no missing join keys
+    if df[["team", "game"]].isna().any().any():
+        logger.error("NULL values in join keys (team/game)!")
+
+    # goals_for must be non-negative
+    if (df["goals_for"] < 0).any():
+        logger.error("Negative goals_for detected!")
+
+    # matchweek must be in 1..38
+    if "matchweek" in df.columns:
+        bad_mw = df[~df["matchweek"].between(1, 38)]
+        if not bad_mw.empty:
+            logger.warning("Rows with matchweek outside 1-38: %d", len(bad_mw))
 
 
-def save_silver_player_match(df: pd.DataFrame, silver_dir: str, season: str) -> Path:
+def save_silver_team_match(
+    df:         pd.DataFrame,
+    silver_dir: str,
+    season:     str,
+) -> Path:
+    """Persist the cleaned team_match table to Silver."""
     out_dir = Path(silver_dir) / season
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "player_match_agg.parquet"
+    out_path = out_dir / "team_match.parquet"
     df.to_parquet(out_path, index=False)
-    logger.info("Saved Silver player_match_agg -> %s", out_path)
+    logger.info("Saved Silver team_match -> %s", out_path)
     return out_path

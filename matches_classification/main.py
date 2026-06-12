@@ -30,7 +30,8 @@ warnings.filterwarnings(
 )
 
 from team_trend.pipeline import run_pipeline
-from features import add_match_features, add_new_features, add_rolling_team_form, add_standings_features, add_opponent_adjusted_features, print_standings_sample
+from features import add_match_features, add_new_features, add_rolling_team_form, add_standings_features, \
+    add_opponent_adjusted_features, print_standings_sample
 
 from config import (
     REGRESSION_FEATURES, REGRESSION_TARGET,
@@ -41,18 +42,18 @@ from config import (
 from models.base import RegressionResult
 from models.logistic_pipeline import (
     run_classification_pipeline as run_logistic,
-    build_model_pipeline        as build_logistic,
-    train_model                 as train_logistic,
+    build_model_pipeline as build_logistic,
+    train_model as train_logistic,
 )
 from models.xgboost_pipeline import (
     run_classification_pipeline as run_xgboost,
-    build_model_pipeline        as build_xgboost,
-    train_model                 as train_xgboost,
+    build_model_pipeline as build_xgboost,
+    train_model as train_xgboost,
 )
 from models.lgbm_pipeline import (
     run_classification_pipeline as run_lgbm,
-    build_model_pipeline        as build_lgbm,
-    train_model                 as train_lgbm,
+    build_model_pipeline as build_lgbm,
+    train_model as train_lgbm,
 )
 from models.cascaded_classification import (
     run_classification_pipeline as run_cascaded,
@@ -118,7 +119,7 @@ def build_dataset(csv_path: str = "data/raw/matches_seriea.csv"):
     _section("1 — DATA PIPELINE & FEATURE ENGINEERING")
 
     pipeline_outputs = run_pipeline(csv_path, save=True, output_dir="data/processed")
-    df               = pipeline_outputs["raw_df"]
+    df = pipeline_outputs["raw_df"]
 
     df = add_match_features(df)
     df = add_new_features(df)
@@ -136,9 +137,9 @@ def build_dataset(csv_path: str = "data/raw/matches_seriea.csv"):
 # ─── SECTION 2 — FEATURE ANALYSIS ────────────────────────────────────────────
 
 def run_feature_selection(
-    df:             pd.DataFrame,
-    corr_threshold: float = 0.90,
-    mi_threshold:   float = 0.01,
+        df: pd.DataFrame,
+        corr_threshold: float = 0.90,
+        mi_threshold: float = 0.01,
 ) -> None:
     """
     Leakage audit + redundancy analysis on all numerical feature sets.
@@ -155,15 +156,15 @@ def run_feature_selection(
 
     run_feature_analysis(
         df, LOGISTIC_NUM_FEATURES,
-        label          = "Logistic Regression",
-        corr_threshold = corr_threshold,
-        mi_threshold   = mi_threshold,
+        label="Logistic Regression",
+        corr_threshold=corr_threshold,
+        mi_threshold=mi_threshold,
     )
     run_feature_analysis(
         df, XGBOOST_NUM_FEATURES,
-        label          = "XGBoost / LightGBM",
-        corr_threshold = corr_threshold,
-        mi_threshold   = mi_threshold,
+        label="XGBoost / LightGBM",
+        corr_threshold=corr_threshold,
+        mi_threshold=mi_threshold,
     )
 
 
@@ -182,7 +183,7 @@ def run_classifiers(df: pd.DataFrame):
     _print_clf_summary(logistic)
 
     _section("4 — CLASSIFICATION: XGBOOST")
-    xgboost_base  = run_xgboost(df, tune_draw_threshold=False)
+    xgboost_base = run_xgboost(df, tune_draw_threshold=False)
     xgboost_tuned = run_xgboost(df, tune_draw_threshold=True)
     print("\n  Draw threshold tuning impact:")
     print_classification_leaderboard([xgboost_base, xgboost_tuned])
@@ -221,23 +222,23 @@ def run_regression(df: pd.DataFrame) -> RegressionResult:
     _section("7 — REGRESSION: GOAL DIFFERENCE")
 
     raw = run_regression_pipeline(df, REGRESSION_FEATURES, REGRESSION_TARGET)
-    tm  = raw["test_metrics"]
-    cv  = raw["cv_metrics"]
+    tm = raw["test_metrics"]
+    cv = raw["cv_metrics"]
 
     print(f"  Test → MAE={tm['mae']:.4f}  RMSE={tm['rmse']:.4f}  R²={tm['r2']:.4f}")
     print(f"  CV   → MAE={cv['cv_mae_mean']:.4f}  "
           f"RMSE={cv['cv_rmse_mean']:.4f}  R²={cv['cv_r2_mean']:.4f}")
 
     return RegressionResult(
-        model_name  = "Linear Regression (goal diff)",
-        mae         = tm["mae"],
-        rmse        = tm["rmse"],
-        r2          = tm["r2"],
-        cv_mae      = cv["cv_mae_mean"],
-        cv_rmse     = cv["cv_rmse_mean"],
-        cv_r2       = cv["cv_r2_mean"],
-        predictions = raw["predictions"],
-        model       = raw["model"],
+        model_name="Linear Regression (goal diff)",
+        mae=tm["mae"],
+        rmse=tm["rmse"],
+        r2=tm["r2"],
+        cv_mae=cv["cv_mae_mean"],
+        cv_rmse=cv["cv_rmse_mean"],
+        cv_r2=cv["cv_r2_mean"],
+        predictions=raw["predictions"],
+        model=raw["model"],
     )
 
 
@@ -267,13 +268,13 @@ def run_importance_audit(xgboost, lgbm) -> None:
 
     for result, name in [(xgboost, "XGBoost"), (lgbm, "LightGBM")]:
         run_permutation_audit(
-            grid          = result.model,
-            X_test        = result.X_test,
-            y_test        = result.y_test,
-            threshold     = 0.001,
-            n_repeats     = 15,
-            model_name    = name,
-            label_encoder = result.label_encoder,
+            grid=result.model,
+            X_test=result.X_test,
+            y_test=result.y_test,
+            threshold=0.001,
+            n_repeats=15,
+            model_name=name,
+            label_encoder=result.label_encoder,
         )
 
 
@@ -292,31 +293,31 @@ def run_backtesting_analysis(df: pd.DataFrame, logistic, xgboost, lgbm) -> None:
 
     model_configs = [
         {
-            "model_name":           "Logistic Regression",
-            "build_pipeline_fn":    build_logistic,
-            "train_fn":             train_logistic,
-            "num_features":         LOGISTIC_NUM_FEATURES,
-            "cat_features":         CAT_FEATURES,
+            "model_name": "Logistic Regression",
+            "build_pipeline_fn": build_logistic,
+            "train_fn": train_logistic,
+            "num_features": LOGISTIC_NUM_FEATURES,
+            "cat_features": CAT_FEATURES,
             "needs_label_encoding": False,
-            "best_params":          logistic.model.best_params_,
+            "best_params": logistic.model.best_params_,
         },
         {
-            "model_name":           "XGBoost",
-            "build_pipeline_fn":    build_xgboost,
-            "train_fn":             train_xgboost,
-            "num_features":         XGBOOST_NUM_FEATURES,
-            "cat_features":         CAT_FEATURES,
+            "model_name": "XGBoost",
+            "build_pipeline_fn": build_xgboost,
+            "train_fn": train_xgboost,
+            "num_features": XGBOOST_NUM_FEATURES,
+            "cat_features": CAT_FEATURES,
             "needs_label_encoding": True,
-            "best_params":          xgboost.model.best_params_,
+            "best_params": xgboost.model.best_params_,
         },
         {
-            "model_name":           "LightGBM",
-            "build_pipeline_fn":    build_lgbm,
-            "train_fn":             train_lgbm,
-            "num_features":         LGBM_NUM_FEATURES,
-            "cat_features":         CAT_FEATURES,
+            "model_name": "LightGBM",
+            "build_pipeline_fn": build_lgbm,
+            "train_fn": train_lgbm,
+            "num_features": LGBM_NUM_FEATURES,
+            "cat_features": CAT_FEATURES,
             "needs_label_encoding": False,
-            "best_params":          lgbm.model.best_params_,
+            "best_params": lgbm.model.best_params_,
         },
     ]
 
@@ -328,10 +329,10 @@ def run_backtesting_analysis(df: pd.DataFrame, logistic, xgboost, lgbm) -> None:
 # ─── SECTION 11 — REPORT ─────────────────────────────────────────────────────
 
 def generate_report(
-    pipeline_outputs: dict,
-    best_clf,
-    regression:  RegressionResult,
-    output_path: str = "reports/summary.md",
+        pipeline_outputs: dict,
+        best_clf,
+        regression: RegressionResult,
+        output_path: str = "reports/summary.md",
 ) -> None:
     """
     Assembles the dict expected by generate_summary_md and writes the report.
@@ -343,14 +344,14 @@ def generate_report(
         "classification": best_clf,
         "regression": {
             "test_metrics": {
-                "mae":  regression.mae,
+                "mae": regression.mae,
                 "rmse": regression.rmse,
-                "r2":   regression.r2,
+                "r2": regression.r2,
             },
             "cv_metrics": {
-                "cv_mae_mean":  regression.cv_mae,
+                "cv_mae_mean": regression.cv_mae,
                 "cv_rmse_mean": regression.cv_rmse,
-                "cv_r2_mean":   regression.cv_r2,
+                "cv_r2_mean": regression.cv_r2,
             },
             "predictions": regression.predictions,
         },
@@ -383,7 +384,7 @@ def interpret_xgboost(df: pd.DataFrame, xgboost, sample_idx: int = 0) -> None:
     """
     _section("13 — INTERPRETABILITY: XGBOOST (SHAP)")
 
-    grid   = xgboost.model
+    grid = xgboost.model
     X_test = xgboost.X_test
 
     importance_df = plot_shap_global_importance(grid, X_test, top_k=20)
@@ -395,13 +396,13 @@ def interpret_xgboost(df: pd.DataFrame, xgboost, sample_idx: int = 0) -> None:
 
     _section("13b — SINGLE MATCH EXPLANATION (SHAP)")
 
-    y_test       = xgboost.y_test
+    y_test = xgboost.y_test
     sample_match = X_test.iloc[[sample_idx]]
-    true_label   = y_test.iloc[sample_idx]
+    true_label = y_test.iloc[sample_idx]
 
-    team     = sample_match["team"].values[0]
+    team = sample_match["team"].values[0]
     opponent = sample_match["opponent"].values[0]
-    venue    = sample_match["venue"].values[0]
+    venue = sample_match["venue"].values[0]
     location = "at home" if venue == "Home" else "away"
 
     print(f"\n  Match analysed (index {sample_idx}):")

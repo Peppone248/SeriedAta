@@ -1,14 +1,24 @@
 """
-team_trend/pipeline.py — ETL orchestrator.
+pipeline.py — ETL orchestrator: Bronze -> Silver -> Gold.
 
-Runs the full Bronze → Silver → Gold pipeline for all configured seasons.
-Each layer is idempotent: re-running saves to the same files without
-corrupting previous results (unless force=True).
+Design choices (explained in detail in the accompanying message):
 
-Typical usage:
-    python pipeline.py                   # full run, all seasons
-    python pipeline.py --season 2024-2025  # single season
-    python pipeline.py --layer gold      # gold layer only (assumes silver exists)
+  1. Layer functions are imported, not reimplemented: the pipeline only
+     sequences them. All transformation logic lives in etl/.
+  2. Idempotency via sentinel files (.done) per (layer, season): re-running
+     skips completed work unless force=True.
+  3. Layer selection via start_from: iterate on Silver/Gold without
+     touching the network (Bronze is the only layer that talks to soccerdata).
+  4. Fail-fast per season, continue across seasons: one broken season
+     doesn't kill the whole run; it's logged and skipped.
+  5. The pipeline returns the final Gold DataFrame so callers (main.py,
+     notebooks) can chain straight into modelling.
+
+CLI usage:
+    python pipeline.py                               # all seasons, all layers
+    python pipeline.py --seasons 2024-2025           # one season
+    python pipeline.py --start-from silver           # skip Bronze
+    python pipeline.py --force                       # rebuild everything
 """
 
 from __future__ import annotations
@@ -19,281 +29,149 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import SERIE_A_SEASONS, BRONZE_DIR, SILVER_DIR, GOLD_DIR
-from team_trend.scrapers.schedule_scraper import ScheduleScraper
-from team_trend.scrapers.match_scraper import MatchScraper
-from parse_match import (
-    parse_summary, parse_keeper, parse_shots,
-    parse_passing, parse_defense, parse_possession, parse_misc,
-)
-from clean_players import (
-    clean_summary, clean_keeper, clean_shots,
-    clean_passing, clean_defense, clean_possession, clean_misc,
-)
-from squad_features import aggregate_squad_per_match, build_squad_features
+from etl.bronze.extract import run_bronze
+from etl.silver.clean_team import clean_team_match, save_silver_team_match
+from etl.silver.clean_players import clean_player_match, save_silver_player_match
+from etl.gold.build_features import run_gold
+from visualization.dataset_plots import run_all_dataset_plots
 
 logging.basicConfig(
-    level   = logging.INFO,
-    format  = "%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt = "%H:%M:%S",
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
+# ─── configuration ─────────────────────────────────────────────────────────────
 
-# ─── HELPERS ─────────────────────────────────────────────────────────────────
+SEASONS = [
+    "2020-2021",
+    "2021-2022",
+    "2022-2023",
+    "2023-2024",
+    "2024-2025",
+]
 
-def _save(df: pd.DataFrame, path: str, label: str) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
-    logger.info("Saved %s: %d rows → %s", label, len(df), path)
+BRONZE_DIR = "data/bronze"
+SILVER_DIR = "data/silver"
+GOLD_DIR = "data/gold"
+
+LAYERS = ["bronze", "silver", "gold"]
 
 
-def _load(path: str) -> pd.DataFrame:
-    if not Path(path).exists():
-        return pd.DataFrame()
-    return pd.read_parquet(path)
+# ─── silver orchestration ──────────────────────────────────────────────────────
 
-
-# ─── BRONZE LAYER ────────────────────────────────────────────────────────────
-
-def run_bronze(seasons: list[str], force: bool = False) -> None:
+def run_silver(season: str, force: bool = False) -> None:
     """
-    Scrape FBref and persist raw structured tables to Bronze layer.
+    Run both Silver cleaners for one season and persist.
 
-    For each season:
-      1. Scrape all match URLs from the schedule page
-      2. Scrape each match report
-      3. Parse each table type (summary, keeper, shots, ...)
-      4. Save to data/bronze/{season}/{table_type}.parquet
+    Idempotent: skipped if data/silver/{season}/.done exists and not force.
+    The .done flag is written only after BOTH tables saved successfully, so
+    a crash between the two leaves the season marked incomplete and it will
+    be fully re-run next time (Silver is cheap to recompute from Bronze).
     """
-    scraper = MatchScraper(use_cache=True)
-    sched   = ScheduleScraper(use_cache=True)
+    out_dir = Path(SILVER_DIR) / season
+    done_flag = out_dir / ".done"
 
-    for season in seasons:
-        bronze_season_dir = Path(BRONZE_DIR) / season
-        bronze_season_dir.mkdir(parents=True, exist_ok=True)
+    if done_flag.exists() and not force:
+        logger.info("Silver %s already done - skipping", season)
+        return
 
-        # skip if already done and not forced
-        done_flag = bronze_season_dir / ".done"
-        if done_flag.exists() and not force:
-            logger.info("Bronze season %s already done — skipping", season)
-            continue
+    logger.info("=== SILVER: %s ===", season)
 
-        logger.info("=== BRONZE: season %s ===", season)
+    team_match = clean_team_match(BRONZE_DIR, season)
+    save_silver_team_match(team_match, SILVER_DIR, season)
 
-        match_urls = sched.scrape_match_urls(season)
-        logger.info("Found %d match URLs for season %s", len(match_urls), season)
+    player_agg = clean_player_match(BRONZE_DIR, season)
+    save_silver_player_match(player_agg, SILVER_DIR, season)
 
-        tables: dict[str, list[pd.DataFrame]] = {
-            "summary": [], "keeper": [], "shots": [],
-            "passing": [], "defense": [], "possession": [], "misc": [],
-        }
-
-        for url in match_urls:
-            report = scraper.scrape_match(url)
-            date   = report.date
-
-            for team_id, is_home in [
-                (report.home_team, 1), (report.away_team, 0)
-            ]:
-                if "summary"    in report.tables:
-                    raw = report.tables["summary"]
-                    raw_team = raw[raw["team"] == team_id] if "team" in raw.columns else raw
-                    tables["summary"].append(
-                        parse_summary(raw_team, url, date, team_id, is_home)
-                    )
-                if "keeper_stats" in report.tables:
-                    raw = report.tables["keeper_stats"]
-                    raw_team = raw[raw["team"] == team_id] if "team" in raw.columns else raw
-                    tables["keeper"].append(
-                        parse_keeper(raw_team, url, date, team_id, is_home)
-                    )
-                if "passing" in report.tables:
-                    raw = report.tables["passing"]
-                    raw_team = raw[raw["team"] == team_id] if "team" in raw.columns else raw
-                    tables["passing"].append(
-                        parse_passing(raw_team, url, date, team_id, is_home)
-                    )
-                if "defense" in report.tables:
-                    raw = report.tables["defense"]
-                    raw_team = raw[raw["team"] == team_id] if "team" in raw.columns else raw
-                    tables["defense"].append(
-                        parse_defense(raw_team, url, date, team_id, is_home)
-                    )
-                if "possession" in report.tables:
-                    raw = report.tables["possession"]
-                    raw_team = raw[raw["team"] == team_id] if "team" in raw.columns else raw
-                    tables["possession"].append(
-                        parse_possession(raw_team, url, date, team_id, is_home)
-                    )
-                if "misc" in report.tables:
-                    raw = report.tables["misc"]
-                    raw_team = raw[raw["team"] == team_id] if "team" in raw.columns else raw
-                    tables["misc"].append(
-                        parse_misc(raw_team, url, date, team_id, is_home)
-                    )
-
-            if "shots" in report.tables:
-                tables["shots"].append(
-                    parse_shots(report.tables["shots"], url, date)
-                )
-
-        # save each table type
-        for name, frames in tables.items():
-            if frames:
-                combined = pd.concat(frames, ignore_index=True)
-                _save(combined, str(bronze_season_dir / f"{name}.parquet"), name)
-
-        done_flag.touch()
-        logger.info("Bronze season %s complete", season)
+    done_flag.touch()
+    logger.info("Silver %s complete", season)
 
 
-# ─── SILVER LAYER ────────────────────────────────────────────────────────────
-
-def run_silver(seasons: list[str], force: bool = False) -> None:
-    """
-    Clean Bronze tables and save to Silver layer.
-    """
-    clean_fns = {
-        "summary":    clean_summary,
-        "keeper":     clean_keeper,
-        "shots":      clean_shots,
-        "passing":    clean_passing,
-        "defense":    clean_defense,
-        "possession": clean_possession,
-        "misc":       clean_misc,
-    }
-
-    for season in seasons:
-        bronze_dir = Path(BRONZE_DIR) / season
-        silver_dir = Path(SILVER_DIR) / season
-        silver_dir.mkdir(parents=True, exist_ok=True)
-
-        done_flag = silver_dir / ".done"
-        if done_flag.exists() and not force:
-            logger.info("Silver season %s already done — skipping", season)
-            continue
-
-        logger.info("=== SILVER: season %s ===", season)
-
-        for table_name, clean_fn in clean_fns.items():
-            bronze_path = bronze_dir / f"{table_name}.parquet"
-            if not bronze_path.exists():
-                logger.debug("Bronze %s not found for season %s", table_name, season)
-                continue
-
-            raw = pd.read_parquet(bronze_path)
-            cleaned = clean_fn(raw)
-            _save(cleaned, str(silver_dir / f"{table_name}.parquet"), table_name)
-
-        done_flag.touch()
-        logger.info("Silver season %s complete", season)
-
-
-# ─── GOLD LAYER ──────────────────────────────────────────────────────────────
-
-def run_gold(seasons: list[str], match_results: pd.DataFrame, force: bool = False) -> pd.DataFrame:
-    """
-    Aggregate Silver player stats to squad-level Gold features.
-
-    Args:
-        seasons:        List of season strings.
-        match_results:  DataFrame with (team, date, points, goal_diff)
-                        — from the existing matches_classification dataset.
-        force:          Recompute even if Gold file exists.
-
-    Returns:
-        Concatenated Gold DataFrame across all seasons.
-    """
-    all_frames = []
-
-    for season in seasons:
-        silver_dir = Path(SILVER_DIR) / season
-        gold_dir   = Path(GOLD_DIR)
-        gold_dir.mkdir(parents=True, exist_ok=True)
-
-        gold_path = gold_dir / f"squad_features_{season}.parquet"
-        if gold_path.exists() and not force:
-            logger.info("Gold season %s already done — loading", season)
-            all_frames.append(pd.read_parquet(gold_path))
-            continue
-
-        logger.info("=== GOLD: season %s ===", season)
-
-        def load(name: str) -> pd.DataFrame:
-            p = silver_dir / f"{name}.parquet"
-            return pd.read_parquet(p) if p.exists() else pd.DataFrame()
-
-        summary_df    = load("summary")
-        keeper_df     = load("keeper")
-        shots_df      = load("shots")
-        defense_df    = load("defense")
-        possession_df = load("possession")
-
-        squad_match = aggregate_squad_per_match(
-            summary_df, keeper_df, shots_df, defense_df, possession_df
-        )
-
-        if squad_match.empty:
-            logger.warning("No data aggregated for season %s", season)
-            continue
-
-        season_results = match_results[
-            match_results["date"].dt.year.astype(str).str.startswith(season[:4])
-        ] if not match_results.empty else pd.DataFrame()
-
-        gold_df = build_squad_features(squad_match, season_results)
-        _save(gold_df, str(gold_path), f"squad_features_{season}")
-        all_frames.append(gold_df)
-
-    return pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
-
-
-# ─── ORCHESTRATOR ────────────────────────────────────────────────────────────
+# ─── full pipeline ─────────────────────────────────────────────────────────────
 
 def run_pipeline(
-    seasons:       list[str]     = SERIE_A_SEASONS,
-    match_results: pd.DataFrame  = pd.DataFrame(),
-    force:         bool          = False,
-    start_from:    str           = "bronze",   # "bronze" | "silver" | "gold"
+        seasons: list[str] = SEASONS,
+        start_from: str = "bronze",
+        force: bool = False,
+        save_gold: bool = True,
 ) -> pd.DataFrame:
     """
-    Run the full Bronze → Silver → Gold ETL pipeline.
+    Execute the ETL pipeline.
 
     Args:
-        seasons:       Seasons to process.
-        match_results: Existing match results for form features in Gold.
-        force:         Re-run all layers even if output files exist.
-        start_from:    Skip earlier layers if Bronze/Silver already exist.
+        seasons:    seasons to process.
+        start_from: 'bronze' | 'silver' | 'gold' — entry layer. Layers before
+                    it are assumed to exist on disk (validated, not rebuilt).
+        force:      rebuild layers even if their .done flags exist.
+        save_gold:  persist the Gold parquet.
 
     Returns:
-        Gold DataFrame ready for ML models.
+        The Gold DataFrame spanning all successfully processed seasons.
     """
-    logger.info("Starting ETL pipeline for seasons: %s", seasons)
+    if start_from not in LAYERS:
+        raise ValueError(f"start_from must be one of {LAYERS}")
 
-    if start_from == "bronze":
-        run_bronze(seasons, force=force)
-        run_silver(seasons, force=force)
-    elif start_from == "silver":
-        run_silver(seasons, force=force)
+    start_idx = LAYERS.index(start_from)
+    processed: list[str] = []
 
-    gold_df = run_gold(seasons, match_results, force=force)
+    for season in seasons:
+        try:
+            if start_idx <= 0:
+                run_bronze(season, bronze_dir=BRONZE_DIR, force=force)
 
-    logger.info("Pipeline complete. Gold shape: %s", gold_df.shape)
-    return gold_df
+            if start_idx <= 1:
+                run_silver(season, force=force)
+            else:
+                _assert_silver_exists(season)
+
+            processed.append(season)
+
+        except Exception:
+            logger.exception("Season %s failed — skipping", season)
+
+    if not processed:
+        raise RuntimeError("No season processed successfully.")
+
+    logger.info("=== GOLD: %s ===", processed)
+    gold = run_gold(SILVER_DIR, processed, gold_dir=GOLD_DIR, save=save_gold)
+
+    logger.info("Pipeline complete. Gold: %s rows x %s cols from %d seasons",
+                gold.shape[0], gold.shape[1], len(processed))
+
+    run_all_dataset_plots(gold, save_dir="reports/plots/dataset")
+
+    return gold
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────────
+def _assert_silver_exists(season: str) -> None:
+    """Loud precondition check when starting from gold."""
+    sp = Path(SILVER_DIR) / season
+    missing = [f for f in ("team_match.parquet", "player_match_agg.parquet")
+               if not (sp / f).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"start_from='gold' but Silver files missing for {season}: {missing}. "
+            f"Run with --start-from silver first."
+        )
+
+
+# ─── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="team_trend ETL pipeline")
-    parser.add_argument("--seasons", nargs="+", default=SERIE_A_SEASONS)
-    parser.add_argument("--layer",   choices=["bronze", "silver", "gold"], default="bronze")
-    parser.add_argument("--force",   action="store_true")
+    parser.add_argument("--seasons", nargs="+", default=SEASONS,
+                        help="Seasons to process, e.g. 2024-2025")
+    parser.add_argument("--start-from", choices=LAYERS, default="bronze",
+                        dest="start_from",
+                        help="Entry layer (earlier layers must exist on disk)")
+    parser.add_argument("--force", action="store_true",
+                        help="Rebuild even if .done flags exist")
     args = parser.parse_args()
 
     run_pipeline(
-        seasons    = args.seasons,
-        force      = args.force,
-        start_from = args.layer,
+        seasons=args.seasons,
+        start_from=args.start_from,
+        force=args.force,
     )
