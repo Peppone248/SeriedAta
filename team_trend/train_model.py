@@ -1,22 +1,12 @@
 """
-train_model.py — train and evaluate the squad momentum regressor.
+train_model.py — train and evaluate squad-momentum regressors.
 
-What it does:
-  1. Load the Gold dataset from data/gold/squad_momentum.parquet
-  2. Walk-forward backtest by season:
-        fold k: train on seasons [s_1 .. s_k], test on season s_{k+1}
-     With 5 seasons, this produces 4 folds. Each fold simulates real
-     deployment: the model only ever sees the past.
-  3. For each fold, train the from-scratch linear regression, predict
-     on the held-out season, report MAE, RMSE, R^2 and a per-team summary.
-  4. Compare against two baselines:
-        - mean baseline:  predict y_train.mean() everywhere
-        - persistence:    predict roll5_points * 5 (the team's recent form
-                          extrapolated linearly)
-  5. Aggregate stability across folds (mean and std of each metric).
+Now supports both:
+  - LinearRegressionScratch (numpy, ridge, our from-scratch baseline)
+  - XGBoostRegressorWrapper  (xgboost, non-linear, library-backed)
 
-Walk-forward backtesting is the right evaluation for time-series tasks:
-random k-fold would leak future data into training and produce inflated R^2.
+Walk-forward CV by season. Models are trained on identical features so the
+comparison isolates the effect of MODEL FAMILY, not feature engineering.
 """
 
 from __future__ import annotations
@@ -27,13 +17,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from linear_regression import (
-    LinearRegressionScratch,
-    Standardizer,
-    mae,
-    rmse,
-    r2,
+from models.linear_regression import (
+    LinearRegressionScratch, Standardizer, mae, rmse, r2,
 )
+from models.xgboost_regressor import XGBoostRegressorWrapper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,12 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 GOLD_PATH = "data/gold/squad_momentum.parquet"
-TARGET    = "next_5_matchweek_points"
+TARGET = "next_5_matchweek_points"
 
-# Pre-match features only. Anything from the current match (points,
-# goals_for, possession on its own, etc.) would leak the target.
 ROLL_FEATURES = [
     "roll5_points", "roll5_goal_diff",
     "roll5_goals_for", "roll5_goals_against",
@@ -59,6 +43,8 @@ ROLL_FEATURES = [
     "roll5_minutes_std", "roll5_squad_age_mean",
     "roll5_sum_tackles_won", "roll5_sum_interceptions",
     "roll5_sum_yellow_cards", "roll5_sum_fouls",
+    # volatility (new)
+    "roll5_points_std", "roll5_goal_diff_std",
 ]
 CONTEXT_FEATURES = [
     "is_home", "days_rest",
@@ -71,10 +57,6 @@ FEATURES = ROLL_FEATURES + CONTEXT_FEATURES
 # ─── walk-forward fold generator ───────────────────────────────────────────────
 
 def season_folds(seasons_sorted: list[str]) -> list[tuple[list[str], str]]:
-    """
-    [(train_seasons, test_season), ...] with expanding train window.
-    Needs at least 2 seasons; with 5 seasons -> 4 folds.
-    """
     if len(seasons_sorted) < 2:
         raise ValueError("Need at least 2 seasons for walk-forward CV.")
     return [(seasons_sorted[:i], seasons_sorted[i])
@@ -84,99 +66,101 @@ def season_folds(seasons_sorted: list[str]) -> list[tuple[list[str], str]]:
 # ─── one fold ──────────────────────────────────────────────────────────────────
 
 def train_and_evaluate_fold(
-    train_df: pd.DataFrame,
-    test_df:  pd.DataFrame,
-    features: list[str],
-    target:   str,
-    l2:       float = 1.0,
+        model_factory,
+        needs_scaling: bool,
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        features: list[str],
+        target: str,
 ) -> dict:
-    """Fit on train, predict on test, return metrics and predictions."""
+    """
+    Fit one model on train, predict on test, return metrics.
+
+    Args:
+        model_factory:  callable returning a fresh, unfitted model.
+        needs_scaling:  True for linear, False for trees.
+    """
     X_tr, y_tr = train_df[features].to_numpy(float), train_df[target].to_numpy(float)
-    X_te, y_te = test_df [features].to_numpy(float), test_df [target].to_numpy(float)
+    X_te, y_te = test_df[features].to_numpy(float), test_df[target].to_numpy(float)
 
-    scaler = Standardizer().fit(X_tr)
-    X_tr_s = scaler.transform(X_tr)
-    X_te_s = scaler.transform(X_te)
+    if needs_scaling:
+        scaler = Standardizer().fit(X_tr)
+        X_tr, X_te = scaler.transform(X_tr), scaler.transform(X_te)
 
-    model = LinearRegressionScratch(solver="normal", l2=l2).fit(X_tr_s, y_tr)
+    model = model_factory()
+    if hasattr(model, "fit") and "feature_names" in model.fit.__code__.co_varnames:
+        model.fit(X_tr, y_tr, feature_names=features)
+    else:
+        model.fit(X_tr, y_tr)
 
-    pred_tr = model.predict(X_tr_s)
-    pred_te = model.predict(X_te_s)
+    pred_tr = model.predict(X_tr)
+    pred_te = model.predict(X_te)
 
-    # baselines computed inside the fold so they respect the same temporal split
     baseline_mean = np.full_like(y_te, y_tr.mean())
-    # persistence: extrapolate roll5_points to a 5-match horizon
     persistence = (test_df["roll5_points"].to_numpy(float) * 5).clip(0, 15)
 
     return {
-        "n_train":          len(train_df),
-        "n_test":           len(test_df),
-        "train_mae":        mae (y_tr, pred_tr),
-        "train_rmse":       rmse(y_tr, pred_tr),
-        "train_r2":         r2  (y_tr, pred_tr),
-        "test_mae":         mae (y_te, pred_te),
-        "test_rmse":        rmse(y_te, pred_te),
-        "test_r2":          r2  (y_te, pred_te),
-        "baseline_mae":     mae (y_te, baseline_mean),
-        "baseline_rmse":    rmse(y_te, baseline_mean),
-        "persistence_mae":  mae (y_te, persistence),
-        "persistence_rmse": rmse(y_te, persistence),
-        "predictions":      pd.DataFrame({
-            "team":      test_df["team"].values,
+        "n_train": len(train_df),
+        "n_test": len(test_df),
+        "train_mae": mae(y_tr, pred_tr),
+        "test_mae": mae(y_te, pred_te),
+        "test_rmse": rmse(y_te, pred_te),
+        "test_r2": r2(y_te, pred_te),
+        "baseline_mae": mae(y_te, baseline_mean),
+        "persistence_mae": mae(y_te, persistence),
+        "predictions": pd.DataFrame({
+            "team": test_df["team"].values,
             "matchweek": test_df["matchweek"].values,
-            "actual":    y_te,
+            "actual": y_te,
             "predicted": pred_te,
-            "residual":  y_te - pred_te,
+            "residual": y_te - pred_te,
         }),
-        "model":            model,
-        "scaler":           scaler,
+        "model": model,
     }
 
 
 # ─── full walk-forward ─────────────────────────────────────────────────────────
 
 def walk_forward_backtest(
-    gold:     pd.DataFrame,
-    features: list[str],
-    target:   str,
-    l2:       float = 1.0,
+        gold: pd.DataFrame,
+        model_factory,
+        needs_scaling: bool,
+        features: list[str],
+        target: str,
+        label: str,
 ) -> tuple[pd.DataFrame, list[dict]]:
-    """
-    Returns (fold_summary_df, fold_results_list).
-    fold_summary_df has one row per fold for quick comparison;
-    fold_results_list keeps full per-fold output including predictions.
-    """
     seasons = sorted(gold["season"].unique())
-    folds   = season_folds(seasons)
-    logger.info("Walk-forward CV over %d folds across seasons %s",
-                len(folds), seasons)
+    folds = season_folds(seasons)
+    logger.info("[%s] walk-forward CV over %d folds across seasons %s",
+                label, len(folds), seasons)
 
     rows, results = [], []
     for train_seasons, test_season in folds:
         train_df = gold[gold["season"].isin(train_seasons)].dropna(subset=features + [target])
-        test_df  = gold[gold["season"] == test_season].dropna(subset=features + [target])
-        logger.info("Fold: train=%s (%d rows) -> test=%s (%d rows)",
-                    train_seasons, len(train_df), test_season, len(test_df))
+        test_df = gold[gold["season"] == test_season].dropna(subset=features + [target])
+        logger.info("[%s] fold: train=%s (%d) -> test=%s (%d)",
+                    label, train_seasons, len(train_df), test_season, len(test_df))
 
-        res = train_and_evaluate_fold(train_df, test_df, features, target, l2=l2)
-        res["test_season"]   = test_season
+        res = train_and_evaluate_fold(
+            model_factory, needs_scaling, train_df, test_df, features, target,
+        )
+        res["test_season"] = test_season
         res["train_seasons"] = train_seasons
+        res["label"] = label
         results.append(res)
 
         rows.append({k: v for k, v in res.items()
-                     if k not in ("predictions", "model", "scaler")})
+                     if k not in ("predictions", "model")})
 
-    summary = pd.DataFrame(rows)
-    return summary, results
+    return pd.DataFrame(rows), results
 
 
 # ─── report ────────────────────────────────────────────────────────────────────
 
-def print_report(summary: pd.DataFrame) -> None:
+def print_report(label: str, summary: pd.DataFrame) -> None:
     print("\n" + "=" * 78)
-    print(f"{'WALK-FORWARD BACKTEST — SQUAD MOMENTUM':^78}")
+    print(f"{label.upper():^78}")
     print("=" * 78)
-
     show = summary[[
         "test_season", "n_train", "n_test",
         "train_mae", "test_mae", "test_rmse", "test_r2",
@@ -185,78 +169,105 @@ def print_report(summary: pd.DataFrame) -> None:
     for c in show.columns[3:]:
         show[c] = show[c].round(3)
     print(show.to_string(index=False))
+    print(f"\nstability   test_mae = {summary['test_mae'].mean():.3f} ± {summary['test_mae'].std():.3f}")
+    print(f"            test_r2  = {summary['test_r2'].mean():.3f} ± {summary['test_r2'].std():.3f}")
 
-    print("\n" + "-" * 78)
-    print("STABILITY (mean ± std across folds):")
-    print("-" * 78)
-    for m in ["test_mae", "test_rmse", "test_r2"]:
-        print(f"  {m:14s} {summary[m].mean():.3f}  ±  {summary[m].std():.3f}")
 
-    print("\n" + "-" * 78)
-    print("VS BASELINES (averaged across folds):")
-    print("-" * 78)
-    print(f"  model MAE        : {summary['test_mae'].mean():.3f}")
-    print(f"  mean-baseline    : {summary['baseline_mae'].mean():.3f}   "
-          f"gain {summary['baseline_mae'].mean() - summary['test_mae'].mean():+.3f}")
-    print(f"  persistence base : {summary['persistence_mae'].mean():.3f}   "
-          f"gain {summary['persistence_mae'].mean() - summary['test_mae'].mean():+.3f}")
+def print_comparison(
+        summaries: dict[str, pd.DataFrame],
+) -> None:
+    print("\n" + "=" * 78)
+    print(f"{'MODEL COMPARISON — averaged across folds':^78}")
     print("=" * 78)
+    rows = []
+    for label, s in summaries.items():
+        rows.append({
+            "model": label,
+            "test_mae_mean": round(s["test_mae"].mean(), 3),
+            "test_mae_std": round(s["test_mae"].std(), 3),
+            "test_rmse_mean": round(s["test_rmse"].mean(), 3),
+            "test_r2_mean": round(s["test_r2"].mean(), 3),
+            "vs_baseline": f"+{s['baseline_mae'].mean() - s['test_mae'].mean():.3f}",
+            "vs_persistence": f"+{s['persistence_mae'].mean() - s['test_mae'].mean():.3f}",
+        })
+    out = pd.DataFrame(rows).sort_values("test_mae_mean")
+    print(out.to_string(index=False))
 
 
-def per_team_diagnostics(results: list[dict], top_n: int = 5) -> None:
-    """For the last fold, show worst-predicted teams (largest residuals)."""
+def per_team_diagnostics(results: list[dict], label: str, top_n: int = 5) -> None:
     last = results[-1]
     preds = last["predictions"].copy()
     preds["abs_residual"] = preds["residual"].abs()
-
-    worst = (
-        preds.groupby("team")["abs_residual"]
-        .mean()
-        .sort_values(ascending=False)
-        .head(top_n)
-    )
-    best = (
-        preds.groupby("team")["abs_residual"]
-        .mean()
-        .sort_values()
-        .head(top_n)
-    )
-
-    print(f"\nFold test season: {last['test_season']}")
-    print(f"  Hardest to predict (highest mean |residual|):")
+    worst = preds.groupby("team")["abs_residual"].mean().sort_values(ascending=False).head(top_n)
+    best = preds.groupby("team")["abs_residual"].mean().sort_values().head(top_n)
+    print(f"\n[{label}] last fold (test={last['test_season']})")
+    print(f"  hardest:")
     print(worst.round(2).to_string())
-    print(f"  Easiest to predict:")
+    print(f"  easiest:")
     print(best.round(2).to_string())
 
 
-def top_coefficients(results: list[dict], top_n: int = 12) -> None:
-    """Show the strongest coefficients from the final (most data) model."""
+def top_features(results: list[dict], label: str, top_n: int = 12) -> None:
     last = results[-1]
-    coefs = last["model"].coefficients(FEATURES)
-    print(f"\nTop {top_n} coefficients (model trained on {len(last['train_seasons'])} seasons, standardised scale):")
-    for name, w in coefs[:top_n]:
-        print(f"  {name:32s} {w:+.3f}")
+    pairs = last["model"].coefficients(FEATURES)
+    header = "top coefficients" if label.startswith("Linear") else "top feature importances"
+    print(f"\n[{label}] {header}:")
+    for name, w in pairs[:top_n]:
+        print(f"  {name:32s} {w:+.4f}")
 
 
 # ─── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     if not Path(GOLD_PATH).exists():
-        raise FileNotFoundError(
-            f"{GOLD_PATH} not found. Run pipeline.py first."
-        )
-
+        raise FileNotFoundError(f"{GOLD_PATH} not found. Run pipeline.py first.")
     gold = pd.read_parquet(GOLD_PATH)
-    logger.info("Loaded Gold: %s, seasons=%s",
-                gold.shape, sorted(gold['season'].unique()))
+    logger.info("Gold: %s, seasons=%s", gold.shape, sorted(gold['season'].unique()))
 
-    summary, results = walk_forward_backtest(
-        gold, features=FEATURES, target=TARGET, l2=1.0,
-    )
+    models = {
+        "Linear (ridge)": dict(
+            factory=lambda: LinearRegressionScratch(solver="normal", l2=1.0),
+            needs_scaling=True,
+        ),
+        "XGBoost": dict(
+            factory=lambda: XGBoostRegressorWrapper(),
+            needs_scaling=False,
+        ),
+    }
 
-    print_report(summary)
-    per_team_diagnostics(results)
-    top_coefficients(results)
+    summaries: dict[str, pd.DataFrame] = {}
+    all_results: dict[str, list[dict]] = {}
+
+    for label, cfg in models.items():
+        summary, results = walk_forward_backtest(
+            gold,
+            model_factory=cfg["factory"],
+            needs_scaling=cfg["needs_scaling"],
+            features=FEATURES,
+            target=TARGET,
+            label=label,
+        )
+        print_report(label, summary)
+        per_team_diagnostics(results, label)
+        top_features(results, label)
+        summaries[label] = summary
+        all_results[label] = results
+
+    print_comparison(summaries)
+
+    # ── model behavior plots ──────────────────────────────────────────────
+    try:
+        from visualization.model_plots import run_all_model_plots
+        run_all_model_plots(
+            results_by_model=all_results,
+            gold=gold,
+            features=FEATURES,
+            save_dir="reports/plots/model",
+        )
+    except ImportError as exc:
+        logger.warning("Skipping model plots: %s", exc)
+
+    return summaries, all_results
 
 
 if __name__ == "__main__":

@@ -45,6 +45,12 @@ ROLL_COLS = [
     "sum_tackles_won", "sum_interceptions", "sum_yellow_cards", "sum_fouls",
 ]
 
+# columns we additionally roll as STANDARD DEVIATION (volatility signal)
+# A team with {3,0,3,0,3} and one with {2,1,2,1,3} have the same mean points
+# but very different volatility — and very different predictability.
+# This directly addresses the mid-table-teams-are-hard pattern in residuals.
+VOLATILITY_COLS = ["points", "goal_diff"]
+
 
 # ─── join ──────────────────────────────────────────────────────────────────────
 
@@ -152,6 +158,17 @@ def _build_rolling(df: pd.DataFrame, window: int = ROLL_WINDOW) -> pd.DataFrame:
         df[f"roll{window}_{col}"] = (
             grp[col].transform(
                 lambda x: x.shift(1).rolling(window, min_periods=1).mean()
+            )
+        )
+
+    # volatility features: rolling std of points/goal_diff entering the match
+    # min_periods=2 because std of one observation is undefined (NaN by design)
+    for col in VOLATILITY_COLS:
+        if col not in df.columns:
+            continue
+        df[f"roll{window}_{col}_std"] = (
+            grp[col].transform(
+                lambda x: x.shift(1).rolling(window, min_periods=2).std()
             )
         )
 

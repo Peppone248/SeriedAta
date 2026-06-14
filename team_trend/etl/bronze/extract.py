@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from scrapers.fbref_source import FBrefSource
+from team_trend.scrapers.fbref_source import FBrefSource
 
 logger = logging.getLogger(__name__)
 

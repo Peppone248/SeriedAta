@@ -391,7 +391,6 @@ def run_all_dataset_plots(
         plot_target_by_team(df, save_dir),
         plot_feature_correlation(df, save_dir=save_dir),
         plot_feature_target_correlation(df, save_dir=save_dir),
-        plot_missingness_by_matchweek(df, save_dir=save_dir),
         plot_top_feature_scatters(df, save_dir=save_dir),
     ]
     print(f"=== {len(paths)} plots saved ===")
