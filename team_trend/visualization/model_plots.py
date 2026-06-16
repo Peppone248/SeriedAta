@@ -23,7 +23,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from models.linear_regression import mae as _mae, r2 as _r2
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +100,7 @@ def plot_predicted_vs_actual(
                 color="#5ab27a", linewidth=2,
                 label=f"fit: slope={coef[0]:.2f}")
 
+        from team_trend.models.linear_regression import mae as _mae, r2 as _r2
         ax.set_title(f"{label}\nMAE={_mae(df['actual'], df['predicted']):.2f}  "
                      f"R²={_r2(df['actual'].values, df['predicted'].values):.2f}")
         ax.set_xlabel("Actual next-5 points")
@@ -302,6 +302,214 @@ def plot_team_residual_heatmap(
     return out
 
 
+# ─── 5. team prediction trajectories ───────────────────────────────────────────
+
+def plot_team_trajectories(
+        results_by_model: dict[str, list[dict]],
+        save_dir: str = DEFAULT_PLOT_DIR,
+        n_teams: int = 6,
+        focus_model: str = "XGBoost (production)",
+) -> Path:
+    """
+    For the most recent fold, plot the predicted vs actual next_5_points
+    trajectory across matchweeks, for selected teams.
+
+    Question answered: how does the model TRACK each team through the season?
+    Look for:
+      - predicted line shadowing the actual line -> model captures team's
+        momentum
+      - predicted line flat while actual oscillates -> model defaults to a
+        constant per-team prediction (mean compression)
+      - predicted line consistently above/below actual -> systematic bias
+        for that team (matches the team residual heatmap pattern)
+
+    Teams selected: top 3 + bottom 3 by mean actual in the test fold,
+    so the plot spans the full spectrum.
+    """
+    out_dir = _ensure_dir(save_dir)
+    out = out_dir / "05_team_trajectories.png"
+
+    if focus_model not in results_by_model:
+        focus_model = list(results_by_model.keys())[0]
+    last = results_by_model[focus_model][-1]
+    preds = last["predictions"].copy()
+
+    team_mean = preds.groupby("team")["actual"].mean().sort_values(ascending=False)
+    top = team_mean.head(n_teams // 2).index.tolist()
+    bot = team_mean.tail(n_teams // 2).index.tolist()
+    chosen = top + bot
+
+    ncols = 3
+    nrows = (len(chosen) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows),
+                             sharey=True, sharex=True)
+    axes = np.array(axes).flatten()
+
+    for i, team in enumerate(chosen):
+        ax = axes[i]
+        t = preds[preds["team"] == team].sort_values("matchweek")
+        ax.plot(t["matchweek"], t["actual"], "o-",
+                color="#3266ad", linewidth=2, markersize=5, label="actual")
+        ax.plot(t["matchweek"], t["predicted"], "s--",
+                color="#d84a30", linewidth=2, markersize=5, label="predicted")
+        ax.set_title(team, fontweight="bold")
+        ax.set_xlabel("Matchweek")
+        ax.set_ylabel("Next-5 points" if i % ncols == 0 else "")
+        ax.set_ylim(-1, 16)
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(alpha=0.3)
+
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
+
+    plt.suptitle(
+        f"Team trajectories — {focus_model} (test={last['test_season']})\n"
+        "top 3 + bottom 3 by actual mean",
+        fontsize=12, y=1.00,
+    )
+    plt.tight_layout()
+    plt.savefig(out)
+    plt.close(fig)
+    print(f"  [05] team trajectories saved -> {out}")
+    return out
+
+
+# ─── 6. team prediction trajectories WITH quantile intervals ───────────────────
+
+def plot_team_trajectories_with_intervals(
+        results_by_model: dict[str, list[dict]],
+        save_dir: str = DEFAULT_PLOT_DIR,
+        n_teams: int = 6,
+        quantile_model: str = "XGBoost Quantile",
+) -> Path | None:
+    """
+    Like the standard team trajectory plot but with the quantile prediction
+    interval shaded around the median line. Shows for each team:
+      - actual next-5 points (blue line + markers)
+      - median prediction (orange dashed)
+      - 80% interval band (orange shaded region between q_low and q_high)
+
+    Question answered: where does the model report HIGH confidence vs LOW?
+    Look for:
+      - tight band around volatile teams -> model is overconfident
+      - wide band that contains the actuals -> model honestly admits uncertainty
+      - actuals consistently outside the band -> miscalibration
+    """
+    if quantile_model not in results_by_model:
+        logger.info("Skipping quantile trajectory plot — '%s' not in results",
+                    quantile_model)
+        return None
+
+    out_dir = _ensure_dir(save_dir)
+    out = out_dir / "06_team_trajectories_quantile.png"
+
+    last = results_by_model[quantile_model][-1]
+    preds = last["predictions"].copy()
+
+    if not {"q_low", "q_median", "q_high"}.issubset(preds.columns):
+        logger.warning("Quantile columns missing — skipping interval plot")
+        return None
+
+    team_mean = preds.groupby("team")["actual"].mean().sort_values(ascending=False)
+    chosen = team_mean.head(n_teams // 2).index.tolist() \
+             + team_mean.tail(n_teams // 2).index.tolist()
+
+    ncols = 3
+    nrows = (len(chosen) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows),
+                             sharey=True, sharex=True)
+    axes = np.array(axes).flatten()
+
+    for i, team in enumerate(chosen):
+        ax = axes[i]
+        t = preds[preds["team"] == team].sort_values("matchweek")
+        ax.fill_between(
+            t["matchweek"], t["q_low"], t["q_high"],
+            color="#d84a30", alpha=0.20, label="80% interval",
+        )
+        ax.plot(t["matchweek"], t["q_median"], "s--",
+                color="#d84a30", linewidth=1.8, markersize=4, label="median pred")
+        ax.plot(t["matchweek"], t["actual"], "o-",
+                color="#3266ad", linewidth=2, markersize=5, label="actual")
+
+        # compute per-team coverage and sharpness for the title
+        in_band = (
+                (t["actual"] >= t["q_low"]) & (t["actual"] <= t["q_high"])
+        ).mean()
+        width = (t["q_high"] - t["q_low"]).mean()
+        ax.set_title(f"{team}   cov={in_band:.0%}   width={width:.1f}",
+                     fontweight="bold", fontsize=10)
+        ax.set_xlabel("Matchweek")
+        ax.set_ylabel("Next-5 points" if i % ncols == 0 else "")
+        ax.set_ylim(-1, 16)
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(alpha=0.3)
+
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
+
+    plt.suptitle(
+        f"Team trajectories with 80% prediction intervals — "
+        f"{quantile_model} (test={last['test_season']})",
+        fontsize=12, y=1.00,
+    )
+    plt.tight_layout()
+    plt.savefig(out)
+    plt.close(fig)
+    print(f"  [06] quantile trajectories saved -> {out}")
+    return out
+
+
+# ─── 7. feature group ablation results ─────────────────────────────────────────
+
+def plot_ablation_results(
+        audit_df: pd.DataFrame,
+        baseline_mae: float,
+        save_dir: str = DEFAULT_PLOT_DIR,
+) -> Path:
+    """
+    Horizontal bar chart of MAE delta per feature group removed.
+
+    Sign convention:
+      red bars   (positive delta) -> group is USEFUL (removing hurts)
+      green bars (negative delta) -> group is HARMFUL (removing helps)
+      gray bars  (~zero delta)    -> group is REDUNDANT (no effect)
+    """
+    out_dir = _ensure_dir(save_dir)
+    out = out_dir / "07_ablation_results.png"
+
+    df = audit_df.sort_values("delta", ascending=True).reset_index(drop=True)
+    colors = [
+        "#d84a30" if d > 0.005 else
+        "#5ab27a" if d < -0.005 else
+        "#888888"
+        for d in df["delta"]
+    ]
+
+    fig, ax = plt.subplots(figsize=(11, max(5, len(df) * 0.45)))
+    bars = ax.barh(df["group_removed"], df["delta"], color=colors, alpha=0.85)
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.set_xlabel("MAE delta when group is REMOVED  (positive = group was useful)")
+    ax.set_title(f"Feature group ablation (baseline MAE = {baseline_mae:.3f})")
+    ax.grid(alpha=0.3, axis="x")
+
+    for bar, d in zip(bars, df["delta"]):
+        width = bar.get_width()
+        offset = 0.002 if width >= 0 else -0.002
+        ax.text(
+            width + offset, bar.get_y() + bar.get_height() / 2,
+            f"{d:+.3f}", va="center",
+            ha="left" if width >= 0 else "right",
+            fontsize=9,
+        )
+
+    plt.tight_layout()
+    plt.savefig(out)
+    plt.close(fig)
+    print(f"  [07] ablation results saved -> {out}")
+    return out
+
+
 # ─── orchestrator ──────────────────────────────────────────────────────────────
 
 def run_all_model_plots(
@@ -317,6 +525,10 @@ def run_all_model_plots(
         plot_residual_distribution(results_by_model, save_dir),
         plot_residuals_vs_features(results_by_model, gold, features, save_dir),
         plot_team_residual_heatmap(results_by_model, save_dir),
+        plot_team_trajectories(results_by_model, save_dir),
     ]
+    p6 = plot_team_trajectories_with_intervals(results_by_model, save_dir)
+    if p6 is not None:
+        paths.append(p6)
     print(f"=== {len(paths)} plots saved ===")
     return paths

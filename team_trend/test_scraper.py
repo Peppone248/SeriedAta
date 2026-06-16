@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 
-from scrapers.fbref_source import FBrefSource
+from team_trend.scrapers.fbref_source import FBrefSource
 
 src = FBrefSource(seasons="2024-2025")
 

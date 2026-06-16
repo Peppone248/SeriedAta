@@ -20,7 +20,6 @@ CLI usage:
     python pipeline.py --start-from silver           # skip Bronze
     python pipeline.py --force                       # rebuild everything
 """
-
 from __future__ import annotations
 
 import argparse
@@ -29,17 +28,22 @@ from pathlib import Path
 
 import pandas as pd
 
-from etl.bronze.extract import run_bronze
-from etl.silver.clean_team import clean_team_match, save_silver_team_match
-from etl.silver.clean_players import clean_player_match, save_silver_player_match
-from etl.gold.build_features import run_gold
-from visualization.dataset_plots import run_all_dataset_plots
+from team_trend.etl.bronze.extract import run_bronze
+from team_trend.etl.silver.clean_team import clean_team_match, save_silver_team_match
+from team_trend.etl.silver.clean_players import (
+    clean_player_match,
+    save_silver_player_match,
+    build_player_history,
+    save_silver_player_history,
+)
+from team_trend.etl.gold.build_features import run_gold
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
+
 logger = logging.getLogger(__name__)
 
 # ─── configuration ─────────────────────────────────────────────────────────────
@@ -84,6 +88,10 @@ def run_silver(season: str, force: bool = False) -> None:
 
     player_agg = clean_player_match(BRONZE_DIR, season)
     save_silver_player_match(player_agg, SILVER_DIR, season)
+
+    # per-player history (no aggregation): used by Gold to build squad-quality features
+    player_history = build_player_history(BRONZE_DIR, season)
+    save_silver_player_history(player_history, SILVER_DIR, season)
 
     done_flag.touch()
     logger.info("Silver %s complete", season)
@@ -139,9 +147,6 @@ def run_pipeline(
 
     logger.info("Pipeline complete. Gold: %s rows x %s cols from %d seasons",
                 gold.shape[0], gold.shape[1], len(processed))
-
-    run_all_dataset_plots(gold, save_dir="reports/plots/dataset")
-
     return gold
 
 

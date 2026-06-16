@@ -22,13 +22,12 @@ import logging
 from pathlib import Path
 
 import pandas as pd
-
 from team_trend.scrapers.fbref_source import FBrefSource
 
 logger = logging.getLogger(__name__)
 
 # confirmed available stat types for Serie A
-TEAM_MATCH_STAT_TYPES   = ["schedule", "shooting", "keeper"]
+TEAM_MATCH_STAT_TYPES = ["schedule", "shooting", "keeper"]
 PLAYER_MATCH_STAT_TYPES = ["summary", "keepers"]
 
 
@@ -116,7 +115,7 @@ def _extract_team_match(source: FBrefSource, season_dir: Path) -> None:
     for stat_type in TEAM_MATCH_STAT_TYPES:
         try:
             raw = source.read_team_match_stats(stat_type=stat_type)
-            df  = _prepare(raw)
+            df = _prepare(raw)
             _save(df, season_dir / f"team_{stat_type}.parquet", f"team_{stat_type}")
         except Exception as exc:
             logger.error("  failed team_%s: %s", stat_type, exc)
@@ -125,9 +124,9 @@ def _extract_team_match(source: FBrefSource, season_dir: Path) -> None:
 # ─── player-match extraction ───────────────────────────────────────────────────
 
 def _extract_player_match(
-    source:     FBrefSource,
-    season_dir: Path,
-    game_ids:   list[str],
+        source: FBrefSource,
+        season_dir: Path,
+        game_ids: list[str],
 ) -> None:
     """
     Pull and persist the two player-match tables.
@@ -153,9 +152,9 @@ def _extract_player_match(
 # ─── orchestrator ──────────────────────────────────────────────────────────────
 
 def run_bronze(
-    season:     str,
-    bronze_dir: str  = "data/bronze",
-    force:      bool = False,
+        season: str,
+        bronze_dir: str = "data/bronze",
+        force: bool = False,
 ) -> Path:
     """
     Extract all available raw tables for one season and persist to Bronze.
@@ -169,7 +168,7 @@ def run_bronze(
         Path to the season's Bronze directory.
     """
     season_dir = Path(bronze_dir) / season
-    done_flag  = season_dir / ".done"
+    done_flag = season_dir / ".done"
 
     if done_flag.exists() and not force:
         logger.info("Bronze season %s already done - skipping (use force=True)", season)
@@ -201,9 +200,9 @@ def run_bronze(
 
 
 def run_bronze_seasons(
-    seasons:    list[str],
-    bronze_dir: str  = "data/bronze",
-    force:      bool = False,
+        seasons: list[str],
+        bronze_dir: str = "data/bronze",
+        force: bool = False,
 ) -> None:
     """Run Bronze extraction for multiple seasons."""
     for season in seasons:

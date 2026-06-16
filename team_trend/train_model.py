@@ -1,12 +1,15 @@
 """
 train_model.py — train and evaluate squad-momentum regressors.
 
-Now supports both:
-  - LinearRegressionScratch (numpy, ridge, our from-scratch baseline)
-  - XGBoostRegressorWrapper  (xgboost, non-linear, library-backed)
+Production model:  XGBoost (better on test, handles non-linearity).
+Reference model:   Linear (ridge) — kept as sanity baseline only.
 
-Walk-forward CV by season. Models are trained on identical features so the
-comparison isolates the effect of MODEL FAMILY, not feature engineering.
+Two targets supported, selectable via TARGET_NAME:
+    next_5_matchweek_points  → absolute future points (team baseline + momentum)
+    momentum_change_5        → deviation from current rolling form
+
+Walk-forward CV by season. Both models train on identical features so the
+comparison isolates model family vs feature signal.
 """
 
 from __future__ import annotations
@@ -17,10 +20,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from models.linear_regression import (
+from team_trend.models.linear_regression import (
     LinearRegressionScratch, Standardizer, mae, rmse, r2,
 )
-from models.xgboost_regressor import XGBoostRegressorWrapper
+from team_trend.models.xgboost_regressor import XGBoostRegressorWrapper
+from team_trend.models.xgboost_quantile import XGBoostQuantileRegressor, quantile_diagnostics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +34,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 GOLD_PATH = "data/gold/squad_momentum.parquet"
-TARGET = "next_5_matchweek_points"
+
+# choose which target to predict
+# "next_5_matchweek_points"  → absolute points (the original target)
+# "momentum_change_5"        → deviation from current form (isolates momentum)
+TARGET_NAME = "next_5_matchweek_points"
 
 ROLL_FEATURES = [
     "roll5_points", "roll5_goal_diff",
@@ -43,7 +51,6 @@ ROLL_FEATURES = [
     "roll5_minutes_std", "roll5_squad_age_mean",
     "roll5_sum_tackles_won", "roll5_sum_interceptions",
     "roll5_sum_yellow_cards", "roll5_sum_fouls",
-    # volatility (new)
     "roll5_points_std", "roll5_goal_diff_std",
 ]
 CONTEXT_FEATURES = [
@@ -51,7 +58,27 @@ CONTEXT_FEATURES = [
     "cum_points", "cum_goal_diff", "league_position",
     "season_progress",
 ]
-FEATURES = ROLL_FEATURES + CONTEXT_FEATURES
+# new squad-quality features from player history (Phase A)
+SQUAD_QUALITY_FEATURES = [
+    "squad_quality_goals_per_90",
+    "squad_quality_assists_per_90",
+    "squad_quality_xg_proxy_per_90",
+    "squad_quality_shots_per_90",
+    "starter_avg_experience",
+    "n_starters",
+    "top_scorer_present",
+    "top_assister_present",
+]
+# opponent-aware features (Phase B): avg pre-match form of the next 5 opponents
+OPPONENT_FEATURES = [
+    "opp5_avg_roll5_goals_against",
+    "opp5_avg_roll5_save_pct",
+    "opp5_avg_roll5_points",
+    "opp5_avg_roll5_goal_diff",
+    "opp5_avg_league_position",
+    "opp5_avg_cum_points",
+]
+FEATURES = ROLL_FEATURES + CONTEXT_FEATURES + SQUAD_QUALITY_FEATURES + OPPONENT_FEATURES
 
 
 # ─── walk-forward fold generator ───────────────────────────────────────────────
@@ -73,13 +100,6 @@ def train_and_evaluate_fold(
         features: list[str],
         target: str,
 ) -> dict:
-    """
-    Fit one model on train, predict on test, return metrics.
-
-    Args:
-        model_factory:  callable returning a fresh, unfitted model.
-        needs_scaling:  True for linear, False for trees.
-    """
     X_tr, y_tr = train_df[features].to_numpy(float), train_df[target].to_numpy(float)
     X_te, y_te = test_df[features].to_numpy(float), test_df[target].to_numpy(float)
 
@@ -97,9 +117,14 @@ def train_and_evaluate_fold(
     pred_te = model.predict(X_te)
 
     baseline_mean = np.full_like(y_te, y_tr.mean())
-    persistence = (test_df["roll5_points"].to_numpy(float) * 5).clip(0, 15)
+    # persistence baseline is meaningful only for absolute-points target
+    if target == "next_5_matchweek_points":
+        persistence = (test_df["roll5_points"].to_numpy(float) * 5).clip(0, 15)
+    else:
+        # for momentum_change the persistence baseline is "no change" = 0
+        persistence = np.zeros_like(y_te)
 
-    return {
+    out = {
         "n_train": len(train_df),
         "n_test": len(test_df),
         "train_mae": mae(y_tr, pred_tr),
@@ -118,6 +143,17 @@ def train_and_evaluate_fold(
         "model": model,
     }
 
+    # if the model exposes quantile predictions, capture them and the diagnostics
+    if hasattr(model, "predict_quantiles"):
+        qpred_te = model.predict_quantiles(X_te)
+        taus = sorted(qpred_te.keys())
+        out["predictions"]["q_low"] = qpred_te[taus[0]]
+        out["predictions"]["q_median"] = qpred_te[taus[1]]
+        out["predictions"]["q_high"] = qpred_te[taus[2]]
+        out["quantile_diagnostics"] = quantile_diagnostics(y_te, qpred_te)
+
+    return out
+
 
 # ─── full walk-forward ─────────────────────────────────────────────────────────
 
@@ -131,8 +167,8 @@ def walk_forward_backtest(
 ) -> tuple[pd.DataFrame, list[dict]]:
     seasons = sorted(gold["season"].unique())
     folds = season_folds(seasons)
-    logger.info("[%s] walk-forward CV over %d folds across seasons %s",
-                label, len(folds), seasons)
+    logger.info("[%s] walk-forward CV over %d folds, target=%s",
+                label, len(folds), target)
 
     rows, results = [], []
     for train_seasons, test_season in folds:
@@ -173,9 +209,7 @@ def print_report(label: str, summary: pd.DataFrame) -> None:
     print(f"            test_r2  = {summary['test_r2'].mean():.3f} ± {summary['test_r2'].std():.3f}")
 
 
-def print_comparison(
-        summaries: dict[str, pd.DataFrame],
-) -> None:
+def print_comparison(summaries: dict[str, pd.DataFrame]) -> None:
     print("\n" + "=" * 78)
     print(f"{'MODEL COMPARISON — averaged across folds':^78}")
     print("=" * 78)
@@ -207,13 +241,14 @@ def per_team_diagnostics(results: list[dict], label: str, top_n: int = 5) -> Non
     print(best.round(2).to_string())
 
 
-def top_features(results: list[dict], label: str, top_n: int = 12) -> None:
+def top_features(results: list[dict], label: str, top_n: int = 15) -> None:
     last = results[-1]
     pairs = last["model"].coefficients(FEATURES)
     header = "top coefficients" if label.startswith("Linear") else "top feature importances"
     print(f"\n[{label}] {header}:")
     for name, w in pairs[:top_n]:
-        print(f"  {name:32s} {w:+.4f}")
+        marker = "  ← squad quality" if name in SQUAD_QUALITY_FEATURES else ""
+        print(f"  {name:32s} {w:+.4f}{marker}")
 
 
 # ─── entry point ───────────────────────────────────────────────────────────────
@@ -223,15 +258,31 @@ def main() -> None:
         raise FileNotFoundError(f"{GOLD_PATH} not found. Run pipeline.py first.")
     gold = pd.read_parquet(GOLD_PATH)
     logger.info("Gold: %s, seasons=%s", gold.shape, sorted(gold['season'].unique()))
+    logger.info("Target: %s", TARGET_NAME)
 
+    # filter out features not in this gold (squad quality may be absent for older runs)
+    available_features = [f for f in FEATURES if f in gold.columns]
+    missing = [f for f in FEATURES if f not in gold.columns]
+    if missing:
+        logger.warning("Features missing from Gold (will be skipped): %s", missing)
+    logger.info("Active features: %d", len(available_features))
+
+    # XGBoost is the production model
+    # Linear is kept as a REFERENCE baseline (don't trust its absolute numbers,
+    # use it as a sanity check — if XGBoost gains nothing over linear, something
+    # is wrong; if linear suddenly beats XGBoost across folds, something changed)
     models = {
-        "Linear (ridge)": dict(
-            factory=lambda: LinearRegressionScratch(solver="normal", l2=1.0),
-            needs_scaling=True,
-        ),
-        "XGBoost": dict(
+        "XGBoost (production)": dict(
             factory=lambda: XGBoostRegressorWrapper(),
             needs_scaling=False,
+        ),
+        "XGBoost Quantile": dict(
+            factory=lambda: XGBoostQuantileRegressor(),
+            needs_scaling=False,
+        ),
+        "Linear (reference)": dict(
+            factory=lambda: LinearRegressionScratch(solver="normal", l2=1.0),
+            needs_scaling=True,
         ),
     }
 
@@ -243,8 +294,8 @@ def main() -> None:
             gold,
             model_factory=cfg["factory"],
             needs_scaling=cfg["needs_scaling"],
-            features=FEATURES,
-            target=TARGET,
+            features=available_features,
+            target=TARGET_NAME,
             label=label,
         )
         print_report(label, summary)
@@ -255,13 +306,111 @@ def main() -> None:
 
     print_comparison(summaries)
 
-    # ── model behavior plots ──────────────────────────────────────────────
+    # ── quantile-specific diagnostics ─────────────────────────────────────
+    quant_label = "XGBoost Quantile"
+    if quant_label in all_results:
+        print("\n" + "=" * 78)
+        print(f"{'QUANTILE DIAGNOSTICS — ' + quant_label:^78}")
+        print("=" * 78)
+        rows = []
+        for r in all_results[quant_label]:
+            d = r.get("quantile_diagnostics", {})
+            if d:
+                rows.append({
+                    "test_season": r["test_season"],
+                    "nominal_coverage": d["nominal_coverage"],
+                    "actual_coverage": round(d["actual_coverage"], 3),
+                    "sharpness": round(d["sharpness"], 2),
+                    "pinball_low": round(d["pinball_low"], 3),
+                    "pinball_median": round(d["pinball_median"], 3),
+                    "pinball_high": round(d["pinball_high"], 3),
+                })
+        if rows:
+            qdf = pd.DataFrame(rows)
+            print(qdf.to_string(index=False))
+            avg_cov = qdf["actual_coverage"].mean()
+            avg_sharp = qdf["sharpness"].mean()
+            print(f"\n  mean actual_coverage: {avg_cov:.3f} (target: {rows[0]['nominal_coverage']:.2f})")
+            print(f"  mean sharpness:       {avg_sharp:.2f} points wide")
+            if avg_cov < rows[0]["nominal_coverage"] - 0.05:
+                print("  -> intervals are TOO NARROW (overconfident)")
+            elif avg_cov > rows[0]["nominal_coverage"] + 0.05:
+                print("  -> intervals are TOO WIDE (underconfident)")
+            else:
+                print("  -> well calibrated")
+
+    # ── permutation importance audit on the production model ─────────────
     try:
-        from visualization.model_plots import run_all_model_plots
+        from team_trend.models.permutation_audit import permutation_importance, report_audit
+        last = all_results["XGBoost (production)"][-1]
+        test_season = last["test_season"]
+        # rebuild the test arrays from the same gold rows for this fold
+        test_df = gold[gold["season"] == test_season].dropna(subset=available_features + [TARGET_NAME])
+        X_test = test_df[available_features].to_numpy(float)
+        y_test = test_df[TARGET_NAME].to_numpy(float)
+        audit = permutation_importance(
+            model=last["model"],
+            X_test=X_test,
+            y_test=y_test,
+            feature_names=available_features,
+            n_repeats=10,
+        )
+        drop_candidates = report_audit(
+            audit, drop_thresh=0.005, label=f"XGBoost on test={test_season}",
+        )
+    except Exception as exc:
+        logger.warning("Permutation audit skipped: %s", exc)
+
+    # ── feature-group ablation ────────────────────────────────────────────
+    try:
+        from team_trend.models.ablation import run_group_ablation, print_ablation_report
+
+        # disjoint partition of features into conceptual groups
+        feature_groups = {
+            "core_form": ["roll5_points", "roll5_goal_diff",
+                          "roll5_goals_for", "roll5_goals_against"],
+            "possession": ["roll5_possession"],
+            "shooting": ["roll5_shots", "roll5_shots_on_target",
+                         "roll5_shots_on_target_pct", "roll5_goals_per_shot"],
+            "keeper": ["roll5_save_pct", "roll5_saves"],
+            "rotation": ["roll5_players_used", "roll5_starters_used",
+                         "roll5_minutes_std", "roll5_squad_age_mean"],
+            "defense": ["roll5_sum_tackles_won", "roll5_sum_interceptions"],
+            "discipline": ["roll5_sum_yellow_cards", "roll5_sum_fouls"],
+            "volatility": ["roll5_points_std", "roll5_goal_diff_std"],
+            "context": ["is_home", "days_rest"],
+            "standings": ["cum_points", "cum_goal_diff",
+                          "league_position", "season_progress"],
+            "squad_quality": SQUAD_QUALITY_FEATURES,
+            "opponent": OPPONENT_FEATURES,
+        }
+        # restrict each group to features actually in gold
+        feature_groups = {
+            k: [f for f in v if f in gold.columns]
+            for k, v in feature_groups.items()
+        }
+
+        audit_df, baseline_mae = run_group_ablation(
+            gold=gold,
+            target=TARGET_NAME,
+            feature_groups=feature_groups,
+            model_factory=lambda: XGBoostRegressorWrapper(),
+        )
+        print_ablation_report(audit_df, baseline_mae)
+
+        # save plot
+        from team_trend.visualization.model_plots import plot_ablation_results
+        plot_ablation_results(audit_df, baseline_mae, save_dir="reports/plots/model")
+    except Exception as exc:
+        logger.warning("Ablation skipped: %s", exc)
+
+    # model behavior plots
+    try:
+        from team_trend.visualization.model_plots import run_all_model_plots
         run_all_model_plots(
             results_by_model=all_results,
             gold=gold,
-            features=FEATURES,
+            features=available_features,
             save_dir="reports/plots/model",
         )
     except ImportError as exc:

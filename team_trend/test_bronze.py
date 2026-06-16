@@ -16,8 +16,8 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-from scrapers.fbref_source import FBrefSource
-from etl.bronze.extract import _prepare
+from team_trend.scrapers.fbref_source import FBrefSource
+from team_trend.etl.bronze.extract import _prepare
 
 source = FBrefSource(seasons="2024-2025")
 

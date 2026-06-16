@@ -229,3 +229,86 @@ def save_silver_player_match(df: pd.DataFrame, silver_dir: str, season: str) -> 
     df.to_parquet(out_path, index=False)
     logger.info("Saved Silver player_match_agg -> %s", out_path)
     return out_path
+
+
+# ─── per-player historical stats (for Gold squad-quality features) ────────────
+
+def build_player_history(bronze_dir: str, season: str) -> pd.DataFrame:
+    """
+    Per-player, per-match table with HISTORICAL stats (no leakage).
+
+    For each (player, match) row, computes the player's stats accumulated
+    BEFORE this match using shift(1).expanding(), grouped by (team, player).
+    This is the per-player analogue of the rolling team features.
+
+    Output schema:
+        team, match_url, player, position, minutes_this_match, date,
+        hist_goals_per_90, hist_assists_per_90, hist_shots_per_90,
+        hist_xg_proxy_per_90, hist_minutes_total
+
+    The hist_*_per_90 stats describe each player's productivity BEFORE the
+    current match. They are the building blocks for squad-quality features
+    in Gold: "what is the historical quality of the starting XI?"
+
+    Why we don't have real xG: as discovered earlier, Serie A per-match xG
+    isn't exposed by soccerdata. We use SoT/shots ratios as a quality proxy.
+    """
+    season_path = Path(bronze_dir) / season
+    raw = pd.read_parquet(season_path / "player_summary.parquet")
+
+    df = clean_player_summary(raw)
+
+    # extract date from the 'game' field, which has format "YYYY-MM-DD Home-Away"
+    # player_summary Bronze has no standalone 'date' column
+    if "date" not in df.columns and "game" in df.columns:
+        df["date"] = pd.to_datetime(
+            df["game"].astype(str).str.extract(r"^(\d{4}-\d{2}-\d{2})")[0],
+            errors="coerce",
+        )
+
+    if "date" not in df.columns or df["date"].isna().all():
+        raise ValueError("Could not derive 'date' from player_summary Bronze.")
+
+    df = df.sort_values(["player", "team", "date"]).reset_index(drop=True)
+
+    grp = df.groupby(["player", "team"], observed=True)
+
+    # cumulative stats BEFORE the current match (shift(1) then expanding sum)
+    df["hist_goals_total"]   = grp["Performance_Gls"].transform(lambda x: x.shift(1).expanding().sum())
+    df["hist_assists_total"] = grp["Performance_Ast"].transform(lambda x: x.shift(1).expanding().sum())
+    df["hist_shots_total"]   = grp["Performance_Sh"].transform(lambda x: x.shift(1).expanding().sum())
+    df["hist_sot_total"]     = grp["Performance_SoT"].transform(lambda x: x.shift(1).expanding().sum())
+    df["hist_minutes_total"] = grp["min"].transform(lambda x: x.shift(1).expanding().sum())
+
+    # per-90 normalisation (the standard football comparability metric)
+    # avoid division by zero: replace 0 minutes with NaN -> per_90 becomes NaN
+    safe_minutes = df["hist_minutes_total"].where(df["hist_minutes_total"] > 0)
+    df["hist_goals_per_90"]   = (df["hist_goals_total"]   * 90 / safe_minutes).fillna(0)
+    df["hist_assists_per_90"] = (df["hist_assists_total"] * 90 / safe_minutes).fillna(0)
+    df["hist_shots_per_90"]   = (df["hist_shots_total"]   * 90 / safe_minutes).fillna(0)
+    df["hist_sot_per_90"]     = (df["hist_sot_total"]     * 90 / safe_minutes).fillna(0)
+
+    # xG proxy: shots-on-target rate (since real xG is unavailable for Serie A)
+    df["hist_xg_proxy_per_90"] = df["hist_sot_per_90"] * 0.3   # ~30% conversion benchmark
+
+    cols = [
+        "team", "match_url", "player", "pos", "min", "date",
+        "hist_minutes_total",
+        "hist_goals_per_90", "hist_assists_per_90",
+        "hist_shots_per_90", "hist_sot_per_90", "hist_xg_proxy_per_90",
+    ]
+    cols = [c for c in cols if c in df.columns]
+    out  = df[cols].rename(columns={"min": "minutes_this_match"})
+
+    logger.info("Built player_history: %s, %d unique players",
+                out.shape, out["player"].nunique())
+    return out
+
+
+def save_silver_player_history(df: pd.DataFrame, silver_dir: str, season: str) -> Path:
+    out_dir  = Path(silver_dir) / season
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "player_history.parquet"
+    df.to_parquet(out_path, index=False)
+    logger.info("Saved Silver player_history -> %s", out_path)
+    return out_path
