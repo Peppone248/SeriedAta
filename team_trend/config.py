@@ -1,97 +1,92 @@
 """
-team_trend/config.py — configuration for the Squad Momentum Prediction project.
+config.py — feature and target configuration.
 
-Target:
-    Points accumulated over the next N matchweeks (regression).
+Feature sets defined here based on empirical ablation results.
+The ablation (models/ablation.py) tested each group's contribution by
+removing it and measuring the MAE delta. Groups are classified as:
 
-Feature groups:
-    ATTACKING   → rolling squad xG, shot quality, shot volume
-    DEFENSIVE   → rolling PSxG conceded, goalkeeper form, defensive actions
-    FORM        → rolling points, goal diff, weighted form
-    TACTICAL    → progressive carries, pressing intensity
-    CONTEXT     → league position, fixture difficulty, season progress
-    AVAILABILITY→ squad rotation, accumulated minutes (future: injury data)
+  USEFUL    (delta > +0.005)  → removing hurts the model → keep
+  NEUTRAL   (|delta| <= 0.005) → no measurable effect → drop for parsimony
+  HARMFUL   (delta < -0.005)  → removing HELPS the model → drop
 
-Data sources:
-    Bronze / Silver: FBref match reports (scrapers/match_scraper.py)
-    Gold:            etl/gold/squad_features.py
+Two feature sets are maintained:
+  FEATURES_FULL   → all 41 features (for ablation reruns and debugging)
+  FEATURES_CLEAN  → ablation-pruned set (for production and final results)
+
+The target column is also configurable here.
 """
 
-from __future__ import annotations
+# ─── targets ───────────────────────────────────────────────────────────────────
 
-# ─── TARGET ──────────────────────────────────────────────────────────────────
-PREDICTION_HORIZON: int = 5    # predict points over next N matchweeks
-TARGET_COL:         str = f"next_{PREDICTION_HORIZON}_matchweek_points"
+TARGET_POINTS   = "next_5_matchweek_points"
+TARGET_MOMENTUM = "momentum_change_5"
 
-# ─── CATEGORICAL FEATURES ────────────────────────────────────────────────────
-CAT_FEATURES: list[str] = ["team"]
+# default target
+TARGET = TARGET_POINTS
 
-# ─── NUMERICAL FEATURES ──────────────────────────────────────────────────────
-# All are pre-match rolling means (shift(1) applied in squad_features.py).
 
-ATTACKING_FEATURES: list[str] = [
-    "roll_squad_xg",              # rolling mean xG produced
-    "roll_xg_per_shot",           # rolling shot quality
-    "roll_shot_accuracy",         # rolling shots on target %
-    "roll_squad_shots",           # rolling shot volume
-    "roll_shots_from_pen_area",   # rolling shots from penalty area
-    "roll_avg_shot_distance",     # rolling average shot distance
+# ─── feature groups with ablation classification ───────────────────────────────
+
+# USEFUL: removing these groups increased test MAE
+STANDINGS = [
+    "cum_points", "cum_goal_diff", "league_position", "season_progress",
+]
+POSSESSION = ["roll5_possession"]
+SHOOTING = [
+    "roll5_shots", "roll5_shots_on_target",
+    "roll5_shots_on_target_pct", "roll5_goals_per_shot",
+]
+KEEPER = ["roll5_save_pct", "roll5_saves"]
+OPPONENT = [
+    "opp5_avg_roll5_goals_against",
+    "opp5_avg_roll5_save_pct",
+    "opp5_avg_roll5_points",
+    "opp5_avg_roll5_goal_diff",
+    "opp5_avg_league_position",
+    "opp5_avg_cum_points",
+]
+DEFENSE = ["roll5_sum_tackles_won", "roll5_sum_interceptions"]
+DISCIPLINE = ["roll5_sum_yellow_cards", "roll5_sum_fouls"]
+CONTEXT = ["is_home", "days_rest"]
+CORE_FORM = [
+    "roll5_points", "roll5_goal_diff",
+    "roll5_goals_for", "roll5_goals_against",
 ]
 
-DEFENSIVE_FEATURES: list[str] = [
-    "roll_psxg",                  # rolling xG faced by goalkeeper
-    "gk_form",                    # rolling PSxG+/- (GK outperformance)
-    "roll_goals_against",         # rolling goals conceded
-    "roll_total_tackles",         # rolling defensive work rate
-    "roll_interceptions",         # rolling interceptions
+# NEUTRAL: no measurable effect — dropped for parsimony
+ROTATION = [
+    "roll5_players_used", "roll5_starters_used",
+    "roll5_minutes_std", "roll5_squad_age_mean",
 ]
 
-FORM_FEATURES: list[str] = [
-    "roll_points",                # rolling points (last N)
-    "roll_goal_diff",             # rolling goal differential
-    "weighted_form",              # exponentially weighted form
-    "form_consistency",           # std of points last 5 (stability)
-    "points_trend",               # direction of rolling points
+# HARMFUL: removing these improved the model — dropped
+VOLATILITY = ["roll5_points_std", "roll5_goal_diff_std"]
+SQUAD_QUALITY = [
+    "squad_quality_goals_per_90",
+    "squad_quality_assists_per_90",
+    "squad_quality_xg_proxy_per_90",
+    "squad_quality_shots_per_90",
+    "starter_avg_experience",
+    "n_starters",
+    "top_scorer_present",
+    "top_assister_present",
 ]
 
-TACTICAL_FEATURES: list[str] = [
-    "roll_progressive_carries",   # build-up quality
-    "roll_dribbles_successful",   # individual quality in transition
-    "squad_rotation",             # how much the coach rotates
-    "formation_changed",          # tactical change from previous match
-]
 
-CONTEXT_FEATURES: list[str] = [
-    "league_position",            # current standing
-    "opp_league_position",        # next opponent strength
-    "points_gap_top4",            # distance from Champions League
-    "points_gap_relegation",      # safety margin
-    "season_progress",            # matchweek / 38
-    "is_home",                    # home / away
-    "days_rest",                  # days since last match
-]
+# ─── assembled feature sets ────────────────────────────────────────────────────
 
-# ─── COMBINED FEATURE SET ────────────────────────────────────────────────────
-NUM_FEATURES: list[str] = (
-    ATTACKING_FEATURES
-    + DEFENSIVE_FEATURES
-    + FORM_FEATURES
-    + TACTICAL_FEATURES
-    + CONTEXT_FEATURES
+FEATURES_FULL = (
+    CORE_FORM + POSSESSION + SHOOTING + KEEPER + ROTATION
+    + DEFENSE + DISCIPLINE + VOLATILITY + CONTEXT + STANDINGS
+    + SQUAD_QUALITY + OPPONENT
 )
 
-# ─── SCRAPING ────────────────────────────────────────────────────────────────
-SERIE_A_SEASONS: list[str] = [
-    "2020-2021",
-    "2021-2022",
-    "2022-2023",
-    "2023-2024",
-    "2024-2025",
-]
-SERIE_A_COMP_ID: str = "11"
+# production feature set: only USEFUL groups retained
+# drops: ROTATION (neutral), VOLATILITY (harmful), SQUAD_QUALITY (harmful)
+FEATURES_CLEAN = (
+    CORE_FORM + POSSESSION + SHOOTING + KEEPER
+    + DEFENSE + DISCIPLINE + CONTEXT + STANDINGS + OPPONENT
+)
 
-# ─── DATA PATHS ──────────────────────────────────────────────────────────────
-RAW_DIR:    str = "data/raw"
-BRONZE_DIR: str = "data/bronze"
-SILVER_DIR: str = "data/silver"
-GOLD_DIR:   str = "data/gold"
+# default
+FEATURES = FEATURES_CLEAN

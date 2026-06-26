@@ -25,6 +25,11 @@ from team_trend.models.linear_regression import (
 )
 from team_trend.models.xgboost_regressor import XGBoostRegressorWrapper
 from team_trend.models.xgboost_quantile import XGBoostQuantileRegressor, quantile_diagnostics
+from team_trend.config import (
+    FEATURES_CLEAN, FEATURES_FULL,
+    SQUAD_QUALITY, OPPONENT,
+    TARGET,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,50 +40,10 @@ logger = logging.getLogger(__name__)
 
 GOLD_PATH = "data/gold/squad_momentum.parquet"
 
-# choose which target to predict
-# "next_5_matchweek_points"  → absolute points (the original target)
-# "momentum_change_5"        → deviation from current form (isolates momentum)
-TARGET_NAME = "next_5_matchweek_points"
-
-ROLL_FEATURES = [
-    "roll5_points", "roll5_goal_diff",
-    "roll5_goals_for", "roll5_goals_against",
-    "roll5_possession",
-    "roll5_shots", "roll5_shots_on_target", "roll5_shots_on_target_pct",
-    "roll5_goals_per_shot",
-    "roll5_save_pct", "roll5_saves",
-    "roll5_players_used", "roll5_starters_used",
-    "roll5_minutes_std", "roll5_squad_age_mean",
-    "roll5_sum_tackles_won", "roll5_sum_interceptions",
-    "roll5_sum_yellow_cards", "roll5_sum_fouls",
-    "roll5_points_std", "roll5_goal_diff_std",
-]
-CONTEXT_FEATURES = [
-    "is_home", "days_rest",
-    "cum_points", "cum_goal_diff", "league_position",
-    "season_progress",
-]
-# new squad-quality features from player history (Phase A)
-SQUAD_QUALITY_FEATURES = [
-    "squad_quality_goals_per_90",
-    "squad_quality_assists_per_90",
-    "squad_quality_xg_proxy_per_90",
-    "squad_quality_shots_per_90",
-    "starter_avg_experience",
-    "n_starters",
-    "top_scorer_present",
-    "top_assister_present",
-]
-# opponent-aware features (Phase B): avg pre-match form of the next 5 opponents
-OPPONENT_FEATURES = [
-    "opp5_avg_roll5_goals_against",
-    "opp5_avg_roll5_save_pct",
-    "opp5_avg_roll5_points",
-    "opp5_avg_roll5_goal_diff",
-    "opp5_avg_league_position",
-    "opp5_avg_cum_points",
-]
-FEATURES = ROLL_FEATURES + CONTEXT_FEATURES + SQUAD_QUALITY_FEATURES + OPPONENT_FEATURES
+TARGET_NAME = TARGET
+FEATURES = FEATURES_CLEAN
+SQUAD_QUALITY_FEATURES = SQUAD_QUALITY
+OPPONENT_FEATURES = OPPONENT
 
 
 # ─── walk-forward fold generator ───────────────────────────────────────────────
