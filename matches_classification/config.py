@@ -88,3 +88,23 @@ REGRESSION_TARGET: str = "goal_diff"
 # model_comparison.py imports NUM_FEATURES / CAT_FEATURES.
 # Uses logistic features so all models train on identical features (fair split).
 NUM_FEATURES = LOGISTIC_NUM_FEATURES
+
+# ─── CLEANING CONSTANTS ──────────────────────────────────────────────────────
+DROP_COLUMNS: list[str] = [
+    "match report", "notes", "captain", "referee",
+]
+
+NUMERIC_COLUMNS: list[str] = [
+    "gf", "ga", "xg", "xga", "poss", "sh", "sot", "dist",
+    "fk", "pk", "pkatt", "attendance",
+]
+
+CATEGORICAL_COLUMNS: list[str] = [
+    "team", "opponent", "venue", "comp", "round", "day",
+    "result", "formation", "opp formation",
+]
+
+# ─── VALIDATION CONSTANTS ────────────────────────────────────────────────────
+VALID_RESULTS: list[str] = ["W", "D", "L"]
+VALID_VENUES: list[str] = ["Home", "Away"]
+

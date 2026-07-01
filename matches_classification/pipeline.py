@@ -35,7 +35,7 @@ def run_pipeline(
 
     validation_summary = validate_raw_values(raw_df)
 
-    add_match_features(raw_df)
+    raw_df = add_match_features(raw_df)
     add_match_identifiers(raw_df)
 
     raw_df.to_csv("data/interim/matches_featured.csv", index=False)
