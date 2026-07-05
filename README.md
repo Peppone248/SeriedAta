@@ -43,7 +43,7 @@ The analysis is fully reproducible from source via `python run_defr_analysis.py`
 ## Project structure
 
 ```text
-SerieAwithPandas/
+SeriedAta/
 │
 ├── matches_classification/          # W/D/L classification pipeline
 │   ├── data/raw/matches_seriea.csv
