@@ -1,6 +1,6 @@
 # Serie dAta ⚽
 
-A data science project built around **Serie A football** (seasons 2020–2025). The goal is to explore how far you can go in understanding and predicting match outcomes using only publicly available team-level and squad-level statistics — no match events, no live tracking, no betting odds.
+Project built around **Serie A** (seasons 2020–2025). The aim is to explore how far you can go in understanding and predicting match outcomes, team_trend over years and defensive profiles, using only publicly available team-level and squad-level statistics — no match events, no live tracking, no betting odds.
 
 The project grew organically across three areas, each asking a different question about the same sport.
 
@@ -36,7 +36,7 @@ Inspired by the Hudl/StatsBomb article *"Defensive Responsibility: A New Way To 
 
 The metric produces footballistically coherent results — Gasperini's aggressive Atalanta ranks high, Sarri's possession-dominant Napoli ranks low — and a bridge regression (R² = 0.59) quantifies how much of the spatial defensive signal survives when compressed into the aggregate statistics that FBref provides.
 
-Two self-contained HTML reports document the full methodology, the results, and the limitations. The analysis is fully reproducible from source via `python run_defr_analysis.py`.
+The analysis is fully reproducible from source via `python run_defr_analysis.py`.
 
 ---
 
