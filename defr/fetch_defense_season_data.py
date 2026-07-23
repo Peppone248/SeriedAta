@@ -36,6 +36,7 @@ SEASON_INT = {"2020-21": 2020, "2021-22": 2021, "2022-23": 2022,
 
 def main():
     import soccerdata as sd
+    import pandas as pd
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     print("=" * 64)
